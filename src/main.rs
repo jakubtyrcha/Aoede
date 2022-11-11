@@ -22,13 +22,15 @@ fn main() {
 }
 
 struct MyApp {
-    stream: cpal::Stream
+    stream: cpal::Stream,
+    freq: f32
 }
 
 impl Default for MyApp {
     fn default() -> Self {
         let self1 = MyApp {
-            stream: stream_setup_for(sample_next).unwrap()
+            stream: stream_setup_for(sample_next).unwrap(),
+            freq: 1000.0
         };
         self1.stream.play().unwrap();
         self1
@@ -39,6 +41,7 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My egui Application");
+            ui.add(egui::Slider::new(&mut self.freq, 10.0..=1000.0).text("Frequency"));
         });
     }
 }
