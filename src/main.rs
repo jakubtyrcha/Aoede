@@ -7,13 +7,48 @@ extern crate clap;
 extern crate cpal;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use eframe::egui;
 
-fn main() -> anyhow::Result<()> {
-    let stream = stream_setup_for(sample_next)?;
-    stream.play()?;
-    std::thread::sleep(std::time::Duration::from_millis(3000));
-    Ok(())
+fn main() {
+    // Log to stdout (if you run with `RUST_LOG=debug`).
+    tracing_subscriber::fmt::init();
+
+    let options = eframe::NativeOptions::default();
+    eframe::run_native(
+        "My egui App",
+        options,
+        Box::new(|_cc| Box::new(MyApp::default())),
+    );
 }
+
+struct MyApp {
+    stream: cpal::Stream
+}
+
+impl Default for MyApp {
+    fn default() -> Self {
+        let self1 = MyApp {
+            stream: stream_setup_for(sample_next).unwrap()
+        };
+        self1.stream.play().unwrap();
+        self1
+    }
+}
+
+impl eframe::App for MyApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("My egui Application");
+        });
+    }
+}
+
+// fn main() -> anyhow::Result<()> {
+//     let stream = stream_setup_for(sample_next)?;
+//     stream.play()?;
+//     std::thread::sleep(std::time::Duration::from_millis(3000));
+//     Ok(())
+// }
 
 fn sample_next(o: &mut SampleRequestOptions) -> f32 {
     o.tick();
