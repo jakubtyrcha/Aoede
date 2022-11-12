@@ -6,6 +6,7 @@ extern crate anyhow;
 extern crate clap;
 extern crate cpal;
 
+use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex}};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use eframe::egui;
 
@@ -23,17 +24,29 @@ fn main() {
 
 struct MyApp {
     stream: cpal::Stream,
-    freq: f32
+    state: Arc<Mutex<SharedState>>
+}
+
+struct SharedState {
+    freq: f32,
+    volume: f32,
 }
 
 impl Default for MyApp {
     fn default() -> Self {
-        let self1 = MyApp {
-            stream: stream_setup_for(sample_next).unwrap(),
-            freq: 1000.0
+        let state = Arc::new(Mutex::new(SharedState{ freq: 1000.0, volume: 1.0 }));
+        let state_clone = Arc::clone(&state);
+        let callback = move |o: &mut SampleRequestOptions| {
+            o.tick();
+            let state = state_clone.lock().unwrap();
+            o.tone(state.freq) * state.volume
         };
-        self1.stream.play().unwrap();
-        self1
+        let result = MyApp {
+            stream: stream_setup_for(callback).unwrap(),
+            state: state,
+        };
+        result.stream.play().unwrap();
+        result
     }
 }
 
@@ -41,22 +54,11 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My egui Application");
-            ui.add(egui::Slider::new(&mut self.freq, 10.0..=1000.0).text("Frequency"));
+            let mut state = self.state.lock();
+            ui.add(egui::Slider::new(&mut state.as_mut().unwrap().freq, 10.0..=1000.0).text("Frequency"));
+            ui.add(egui::Slider::new(&mut state.as_mut().unwrap().volume, 0.0..=2.0).text("Volume"));
         });
     }
-}
-
-// fn main() -> anyhow::Result<()> {
-//     let stream = stream_setup_for(sample_next)?;
-//     stream.play()?;
-//     std::thread::sleep(std::time::Duration::from_millis(3000));
-//     Ok(())
-// }
-
-fn sample_next(o: &mut SampleRequestOptions) -> f32 {
-    o.tick();
-    o.tone(440.)
-    // combination of several tones
 }
 
 pub struct SampleRequestOptions {
@@ -76,14 +78,14 @@ impl SampleRequestOptions {
 
 pub fn stream_setup_for<F>(on_sample: F) -> Result<cpal::Stream, anyhow::Error>
 where
-    F: FnMut(&mut SampleRequestOptions) -> f32 + std::marker::Send + 'static + Copy,
+    F: FnMut(&mut SampleRequestOptions) -> f32 + std::marker::Send + 'static + Clone,
 {
     let (_host, device, config) = host_device_setup()?;
 
     match config.sample_format() {
-        cpal::SampleFormat::F32 => stream_make::<f32, _>(&device, &config.into(), on_sample),
-        cpal::SampleFormat::I16 => stream_make::<i16, _>(&device, &config.into(), on_sample),
-        cpal::SampleFormat::U16 => stream_make::<u16, _>(&device, &config.into(), on_sample),
+        cpal::SampleFormat::F32 => stream_make::<f32, _>(&device, &config.into(), on_sample.clone()),
+        cpal::SampleFormat::I16 => stream_make::<i16, _>(&device, &config.into(), on_sample.clone()),
+        cpal::SampleFormat::U16 => stream_make::<u16, _>(&device, &config.into(), on_sample.clone()),
     }
 }
 
@@ -109,7 +111,7 @@ pub fn stream_make<T, F>(
 ) -> Result<cpal::Stream, anyhow::Error>
 where
     T: cpal::Sample,
-    F: FnMut(&mut SampleRequestOptions) -> f32 + std::marker::Send + 'static + Copy,
+    F: FnMut(&mut SampleRequestOptions) -> f32 + std::marker::Send + 'static + Clone,
 {
     let sample_rate = config.sample_rate.0 as f32;
     let sample_clock = 0f32;
@@ -124,7 +126,7 @@ where
     let stream = device.build_output_stream(
         config,
         move |output: &mut [T], _: &cpal::OutputCallbackInfo| {
-            on_window(output, &mut request, on_sample)
+            on_window(output, &mut request, on_sample.clone())
         },
         err_fn,
     )?;
