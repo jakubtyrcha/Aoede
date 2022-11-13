@@ -45,12 +45,13 @@ impl Default for MyApp {
 
 impl MyApp {
     pub fn ui(&mut self, ctx: &Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("My egui Application");
-            let mut state = self.state.lock();
-            ui.add(egui::Slider::new(&mut state.as_mut().unwrap().freq, 10.0..=1000.0).text("Frequency"));
-            ui.add(egui::Slider::new(&mut state.as_mut().unwrap().volume, 0.0..=2.0).text("Volume"));
-        });
+        egui::Window::new("Demo")
+            .show(ctx, |ui| {
+                ui.heading("My egui Application");
+                let mut state = self.state.lock();
+                ui.add(egui::Slider::new(&mut state.as_mut().unwrap().freq, 10.0..=1000.0).text("Frequency"));
+                ui.add(egui::Slider::new(&mut state.as_mut().unwrap().volume, 0.0..=2.0).text("Volume"));     
+            });
     }
 }
 
@@ -292,6 +293,24 @@ fn main() {
                     label: Some("encoder"),
                 });
 
+                
+                {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: None,
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &output_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                                store: true,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                    });
+                    rpass.set_pipeline(&render_pipeline);
+                    rpass.draw(0..3, 0..1);
+                }
+
                 // Upload all resources for the GPU.
                 let screen_descriptor = ScreenDescriptor {
                     physical_width: surface_config.width,
@@ -311,28 +330,9 @@ fn main() {
                         &output_view,
                         &paint_jobs,
                         &screen_descriptor,
-                        Some(wgpu::Color::BLACK),
+                        None,
                     )
                     .unwrap();
-
-
-
-                    {
-                        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: None,
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &output_view,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                                    store: true,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                        });
-                        rpass.set_pipeline(&render_pipeline);
-                        rpass.draw(0..3, 0..1);
-                    }
 
                 // Submit the commands.
                 queue.submit(iter::once(encoder.finish()));
