@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::iter;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -217,6 +218,39 @@ fn main() {
     //let mut demo_app = egui_demo_lib::DemoWindows::default();
     let mut app: MyApp = MyApp::default();
 
+    // Load the shaders from disk
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[],
+        push_constant_ranges: &[],
+    });
+
+    let swapchain_format = surface.get_supported_formats(&adapter)[0];
+
+    let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_main",
+            targets: &[Some(swapchain_format.into())],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    });
+
     let start_time = Instant::now();
     event_loop.run(move |event, _, control_flow| {
         // Pass the winit events to the platform integration.
@@ -280,6 +314,26 @@ fn main() {
                         Some(wgpu::Color::BLACK),
                     )
                     .unwrap();
+
+
+
+                    {
+                        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: None,
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &output_view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                                    store: true,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                        });
+                        rpass.set_pipeline(&render_pipeline);
+                        rpass.draw(0..3, 0..1);
+                    }
+
                 // Submit the commands.
                 queue.submit(iter::once(encoder.finish()));
 
