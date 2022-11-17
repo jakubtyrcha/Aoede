@@ -3,12 +3,13 @@ use std::iter;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use audio::{SampleRequestOptions, stream_setup_for};
-use cpal::traits::{StreamTrait};
+use audio::{stream_setup_for, SampleRequestOptions};
+use bytemuck::{Pod, Zeroable};
+use cpal::traits::StreamTrait;
 
-use egui::Context;
 use ::egui::FontDefinitions;
 use chrono::Timelike;
+use egui::Context;
 use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
 use winit::event::Event::*;
@@ -18,9 +19,17 @@ const INITIAL_HEIGHT: u32 = 1080;
 
 mod audio;
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Vertex {
+    _pos: [f32; 2],
+}
+
+//
+
 struct MyApp {
     stream: cpal::Stream,
-    state: Arc<Mutex<SharedState>>
+    state: Arc<Mutex<SharedState>>,
 }
 
 struct SharedState {
@@ -30,14 +39,18 @@ struct SharedState {
 
 impl Default for MyApp {
     fn default() -> Self {
-        let state = Arc::new(Mutex::new(SharedState{ freq: 1000.0, volume: 1.0 }));
+        let state = Arc::new(Mutex::new(SharedState {
+            freq: 1000.0,
+            volume: 1.0,
+        }));
         let state_clone = Arc::clone(&state);
         let result = MyApp {
             stream: stream_setup_for(move |o: &mut SampleRequestOptions| {
                 o.tick();
                 let state = state_clone.lock().unwrap();
                 o.tone(state.freq) * state.volume
-            }).unwrap(),
+            })
+            .unwrap(),
             state: state,
         };
         result.stream.play().unwrap();
@@ -47,13 +60,17 @@ impl Default for MyApp {
 
 impl MyApp {
     pub fn ui(&mut self, ctx: &Context) {
-        egui::Window::new("Demo")
-            .show(ctx, |ui| {
-                ui.heading("My egui Application");
-                let mut state = self.state.lock();
-                ui.add(egui::Slider::new(&mut state.as_mut().unwrap().freq, 10.0..=1000.0).text("Frequency"));
-                ui.add(egui::Slider::new(&mut state.as_mut().unwrap().volume, 0.0..=2.0).text("Volume"));     
-            });
+        egui::Window::new("Demo").show(ctx, |ui| {
+            ui.heading("My egui Application");
+            let mut state = self.state.lock();
+            ui.add(
+                egui::Slider::new(&mut state.as_mut().unwrap().freq, 10.0..=1000.0)
+                    .text("Frequency"),
+            );
+            ui.add(
+                egui::Slider::new(&mut state.as_mut().unwrap().volume, 0.0..=2.0).text("Volume"),
+            );
+        });
     }
 }
 
@@ -141,10 +158,75 @@ fn main() {
         source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
     });
 
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+        label: None,
+    });
+
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
-        bind_group_layouts: &[],
+        bind_group_layouts: &[&bind_group_layout],
         push_constant_ranges: &[],
+    });
+
+    let texture_extent = wgpu::Extent3d {
+        width: 480,
+        height: 100,
+        depth_or_array_layers: 1,
+    };
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: texture_extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+    });
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("Color Sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+        label: None,
     });
 
     let swapchain_format = surface.get_supported_formats(&adapter)[0];
@@ -209,7 +291,6 @@ fn main() {
                     label: Some("encoder"),
                 });
 
-                
                 {
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: None,
@@ -224,6 +305,7 @@ fn main() {
                         depth_stencil_attachment: None,
                     });
                     rpass.set_pipeline(&render_pipeline);
+                    rpass.set_bind_group(0, &bind_group, &[]);
                     rpass.draw(0..3, 0..1);
                 }
 

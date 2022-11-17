@@ -19,3 +19,4 @@ egui_winit_platform = "0.16"
 wgpu = "0.13"
 winit = { version="0.27.3", features = ["x11"]}
 egui_demo_lib = "0.19"
+bytemuck = "1.12.3"
