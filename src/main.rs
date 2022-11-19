@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::iter;
 use std::num::NonZeroU32;
-use std::sync::atomic::AtomicI32;
+use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -77,21 +77,21 @@ impl AudioSampleGenerator {
 // nchannels
 
 struct AudioSampleRingbuffer {
-    buffer: Vec<AtomicI32>,
+    buffer: Vec<AtomicU32>,
     next_sample_write: AtomicI32,
 }
 
 impl AudioSampleRingbuffer {
     fn new(size: usize) -> AudioSampleRingbuffer {
         let mut buffer = Vec::new();
-        buffer.resize_with(size, || AtomicI32::new(0));
+        buffer.resize_with(size, || AtomicU32::new(0));
         AudioSampleRingbuffer {
             buffer: buffer,
             next_sample_write: AtomicI32::new(0),
         }
     }
 
-    fn write(&mut self, value: i32) {
+    fn write(&mut self, value: u32) {
         let N = self.buffer.len();
         let write_sample = self
             .next_sample_write
@@ -123,7 +123,7 @@ impl<'a> AudioSampleProducer<'a> {
         }
     }
 
-    fn write_sample(&mut self, value: i32) {
+    fn write_sample(&mut self, value: u32) {
         self.write_buffer.write(value);
     }
 }
@@ -141,7 +141,7 @@ impl<'a> AudioSampleViewer<'a> {
         }
     }
 
-    fn next(&mut self) -> Option<i32> {
+    fn next(&mut self) -> Option<u32> {
         let buffer_sentinel = self
             .buffer
             .next_sample_write
@@ -223,7 +223,7 @@ impl Default for MyApp {
                         .config
                         .generate(producer.setup, o.index as i32);
                         o.index += 1;
-                    producer.write_sample(0);
+                    producer.write_sample(sample.to_bits());
                 }
                 sample
                 // o.tick();
@@ -354,38 +354,40 @@ fn main() {
 
     // Display the demo application that ships with egui.
 
-    let sample_setup = SampleSetup {
-        sample_rate: 48000,
-        nchannels: 2,
-    };
+    // let sample_setup = SampleSetup {
+    //     sample_rate: 48000,
+    //     nchannels: 2,
+    // };
 
-    let samplegen = AudioSampleGenerator {
-        sin0_freq: 1000.0,
-        sin0_phase: 0.0,
-        sin0_vol: 0.5,
-        sin1_freq: 500.0,
-        sin1_phase: 0.0,
-        sin1_vol: 0.0,
-    };
+    // let samplegen = AudioSampleGenerator {
+    //     sin0_freq: 1000.0,
+    //     sin0_phase: 0.0,
+    //     sin0_vol: 0.5,
+    //     sin1_freq: 500.0,
+    //     sin1_phase: 0.0,
+    //     sin1_vol: 0.0,
+    // };
 
-    let (rx, tx) = channel();
+    // let (rx, tx) = channel();
 
-    let mut audio_buffer = AudioSampleRingbuffer::new(256);
+    // let mut audio_buffer = AudioSampleRingbuffer::new(256);
 
-    let mut producer = AudioSampleProducer::new(sample_setup, samplegen, tx, &mut audio_buffer);
+    // let mut producer = AudioSampleProducer::new(sample_setup, samplegen, tx, &mut audio_buffer);
 
-    producer.write_sample(0);
-    producer.write_sample(16);
-    producer.write_sample(256);
+    // producer.write_sample(0);
+    // producer.write_sample(16);
+    // producer.write_sample(256);
 
-    let mut reader = AudioSampleViewer::new(unsafe { &mut audio_buffer });
+    // let mut reader = AudioSampleViewer::new(unsafe { &mut audio_buffer });
 
-    println!("{:?}", reader.next());
-    println!("{:?}", reader.next());
-    println!("{:?}", reader.next());
+    // println!("{:?}", reader.next());
+    // println!("{:?}", reader.next());
+    // println!("{:?}", reader.next());
 
     //let mut demo_app = egui_demo_lib::DemoWindows::default();
     let mut app: MyApp = MyApp::default();
+
+    let mut reader = AudioSampleViewer::new(unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
 
     //
 
@@ -524,15 +526,15 @@ fn main() {
     );
     let mut next_sample_index: i64 = 0;
 
-    let sample_rate = 480000 as f32;
-    let sample_clock = 0f32;
-    let nchannels = 1 as usize;
-    let mut request = SampleRequestOptions {
-        sample_rate,
-        sample_clock,
-        nchannels,
-        index: 0
-    };
+    // let sample_rate = 480000 as f32;
+    // let sample_clock = 0f32;
+    // let nchannels = 1 as usize;
+    // let mut request = SampleRequestOptions {
+    //     sample_rate,
+    //     sample_clock,
+    //     nchannels,
+    //     index: 0
+    // };
 
     // todo: this should match audio start time, not start of the loop
     let start_time = Instant::now();
@@ -547,11 +549,16 @@ fn main() {
                 let samples_per_sec = audio_texture_width;
                 let current_sample_index =
                     start_time.elapsed().as_micros() as i64 * samples_per_sec as i64 / 1000000;
-                for i in next_sample_index..current_sample_index {
-                    request.tick();
-                    audio_data[(i % audio_samples_buffer_size) as usize] = request.tone(500.0);
+
+                while let Some(sample) = reader.next() {
+                    audio_data[(next_sample_index % audio_samples_buffer_size) as usize] = f32::from_bits(sample as u32);
+                    next_sample_index += 1;
                 }
-                next_sample_index = current_sample_index;
+                // for i in next_sample_index..current_sample_index {
+                //     request.tick();
+                //     audio_data[(i % audio_samples_buffer_size) as usize] = request.tone(500.0);
+                // }
+                // next_sample_index = current_sample_index;
 
                 let output_frame = match surface.get_current_texture() {
                     Ok(frame) => frame,
