@@ -1,11 +1,13 @@
 use std::borrow::Cow;
 use std::iter;
 use std::num::NonZeroU32;
+use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use audio::{stream_setup_for, SampleRequestOptions};
 use bytemuck::{Pod, Zeroable};
+use cpal::Sample;
 use cpal::traits::StreamTrait;
 
 use ::egui::FontDefinitions;
@@ -32,6 +34,92 @@ struct Vertex {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
     size: [i32; 2],
+}
+
+//
+
+// API
+// one buffer (array?)
+// updated from the audio thread?
+// audio thread evaluates new samples and writes to the array
+
+// app reads from the buffer, also updates config!
+
+// sample rate
+// nchannels
+struct SampleSetup {
+    sample_rate: u32,
+    nchannels: usize,
+}
+
+struct AudioSampleGenerator {
+    sin0_freq: f32,
+    sin0_vol: f32,
+    sin0_phase: f32,
+    sin1_freq: f32,
+    sin1_vol: f32,
+    sin1_phase: f32,
+}
+
+struct AudioSampleRingbuffer {
+    buffer: Vec::<AtomicI32>,
+    next_sample_write: AtomicI32,
+}
+
+impl AudioSampleRingbuffer {
+    fn new(size: usize) -> AudioSampleRingbuffer {
+        let mut buffer = Vec::new();
+        buffer.resize_with(size, || AtomicI32::new(0));
+        AudioSampleRingbuffer{ 
+            buffer: buffer, 
+            next_sample_write: AtomicI32::new(0) }
+    }
+
+    fn write(&mut self, value: i32) {
+        let N = self.buffer.len();
+        let write_sample = self.next_sample_write.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let write_index = write_sample as usize % N;
+        self.buffer[write_index].store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct AudioSampleProducer <'a> {
+    // setup: SampleSetup,
+    // config: AudioGeneratorConfig,
+    // config_rx: std::sync::mpsc::Receiver<AudioGeneratorConfig>,
+    write_buffer: &'a mut AudioSampleRingbuffer
+}
+
+impl <'a> AudioSampleProducer <'a> {
+    fn new(write_buffer: &'a mut AudioSampleRingbuffer) -> AudioSampleProducer<'a> {
+        AudioSampleProducer{ write_buffer }
+    }
+
+    fn write_sample(&mut self, value : i32) {
+        self.write_buffer.write(value);
+    }
+}
+
+struct AudioSampleViewer <'a> {
+    buffer: &'a AudioSampleRingbuffer,
+    next_sample_read: i32,
+}
+
+impl <'a> AudioSampleViewer<'a> {
+    fn new(buffer: &'a AudioSampleRingbuffer) -> AudioSampleViewer<'a> {
+        AudioSampleViewer{ buffer, next_sample_read: 0 }
+    }
+
+    fn next(&mut self) -> Option<i32> {
+        let buffer_sentinel = self.buffer.next_sample_write.load(std::sync::atomic::Ordering::SeqCst);
+        if self.next_sample_read < buffer_sentinel {
+            let buffer_index = self.next_sample_read % self.buffer.buffer.len() as i32;
+            let value = self.buffer.buffer[buffer_index as usize].load(std::sync::atomic::Ordering::SeqCst);
+            self.next_sample_read += 1;
+            return Some(value);
+        }
+        None
+    }
 }
 
 //
@@ -158,8 +246,26 @@ fn main() {
     let mut egui_rpass = RenderPass::new(&device, surface_format, 1);
 
     // Display the demo application that ships with egui.
+
+    let mut audio_buffer = AudioSampleRingbuffer::new(256);
+    audio_buffer.buffer.resize_with(256, || AtomicI32::new(0));
+
+    let mut producer = AudioSampleProducer::new(&mut audio_buffer);
+
+    producer.write_sample(0);
+    producer.write_sample(16);
+    producer.write_sample(256);
+
+    let mut reader = AudioSampleViewer::new(unsafe { &mut audio_buffer });
+
+    println!("{:?}", reader.next());
+    println!("{:?}", reader.next());
+    println!("{:?}", reader.next());
+
     //let mut demo_app = egui_demo_lib::DemoWindows::default();
     let mut app: MyApp = MyApp::default();
+
+    //
 
     // Load the shaders from disk
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
