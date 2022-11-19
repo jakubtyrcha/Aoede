@@ -211,13 +211,19 @@ impl Default for MyApp {
             stream: stream_setup_for(move |o: &mut SampleRequestOptions| {
                 let mut sample = 0.0;
                 unsafe {
-                    sample = AUDIO_SAMPLE_PRODUCER
-                        .as_mut()
-                        .unwrap()
+                    let mut producer = AUDIO_SAMPLE_PRODUCER
+                    .as_mut()
+                    .unwrap();
+
+                    if let Ok(config) = producer.config_tx.try_recv() {
+                        producer.config = config;
+                    }
+
+                    sample = producer
                         .config
-                        .generate(AUDIO_SAMPLE_PRODUCER.as_mut().unwrap().setup, o.index as i32);
+                        .generate(producer.setup, o.index as i32);
                         o.index += 1;
-                    AUDIO_SAMPLE_PRODUCER.as_mut().unwrap().write_sample(0);
+                    producer.write_sample(0);
                 }
                 sample
                 // o.tick();
@@ -238,14 +244,36 @@ impl MyApp {
     pub fn ui(&mut self, ctx: &Context) {
         egui::Window::new("Demo").show(ctx, |ui| {
             ui.heading("My egui Application");
-            let mut state = self.state.lock();
-            ui.add(
-                egui::Slider::new(&mut state.as_mut().unwrap().freq, 10.0..=1000.0)
-                    .text("Frequency"),
-            );
-            ui.add(
-                egui::Slider::new(&mut state.as_mut().unwrap().volume, 0.0..=2.0).text("Volume"),
-            );
+            //let mut state = self.state.lock();
+            let config = &mut self.state1;
+            let mut changed = false;
+            changed |= ui.add(
+                egui::Slider::new(&mut config.sin0_freq, 10.0..=1000.0)
+                    .text("Frequency 0"),
+            ).changed();
+            changed |= ui.add(
+                egui::Slider::new(&mut config.sin0_phase, 0.0..=3.14159)
+                    .text("Phase 0"),
+            ).changed();
+            changed |= ui.add(
+                egui::Slider::new(&mut config.sin0_vol, 0.0..=2.0).text("Volume 0"),
+            ).changed();
+
+            changed |= ui.add(
+                egui::Slider::new(&mut config.sin1_freq, 10.0..=1000.0)
+                    .text("Frequency 1"),
+            ).changed();
+            changed |= ui.add(
+                egui::Slider::new(&mut config.sin1_phase, 0.0..=3.14159)
+                    .text("Phase 1"),
+            ).changed();
+            changed |= ui.add(
+                egui::Slider::new(&mut config.sin1_vol, 0.0..=2.0).text("Volume 1"),
+            ).changed();
+
+            if(changed) {
+                self.rx.send(self.state1).unwrap();
+            }
         });
     }
 }
