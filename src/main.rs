@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::iter;
+use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -12,6 +13,8 @@ use chrono::Timelike;
 use egui::Context;
 use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
+use wgpu::util::DeviceExt;
+use wgpu::{ImageCopyTexture, ImageDataLayout, Origin3d};
 use winit::event::Event::*;
 use winit::event_loop::ControlFlow;
 const INITIAL_WIDTH: u32 = 1920;
@@ -23,6 +26,12 @@ mod audio;
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
     _pos: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Uniforms {
+    size: [i32; 2],
 }
 
 //
@@ -161,6 +170,16 @@ fn main() {
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         entries: &[
             wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<Uniforms>() as _),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
@@ -186,9 +205,12 @@ fn main() {
         push_constant_ranges: &[],
     });
 
+    let audio_texture_width = 480;
+    let audio_texture_height = 100;
+
     let texture_extent = wgpu::Extent3d {
-        width: 480,
-        height: 100,
+        width: audio_texture_width,
+        height: audio_texture_height,
         depth_or_array_layers: 1,
     };
 
@@ -214,9 +236,23 @@ fn main() {
     });
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let uniforms = Uniforms {
+        size: [audio_texture_width as i32, audio_texture_height as i32],
+    };
+    let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("uniforms"),
+        contents: bytemuck::bytes_of(&uniforms),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+    });
+
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         layout: &bind_group_layout,
         entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms_buffer.as_entire_binding(),
+            },
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::TextureView(&view),
@@ -250,6 +286,26 @@ fn main() {
         multiview: None,
     });
 
+    let audio_samples_buffer_size = (audio_texture_width * audio_texture_height) as i64;
+    let mut audio_data = Vec::from_iter(
+        [0.0 as f32]
+            .iter()
+            .cycle()
+            .take(audio_samples_buffer_size as usize)
+            .cloned(),
+    );
+    let mut next_sample_index: i64 = 0;
+
+    let sample_rate = 480000 as f32;
+    let sample_clock = 0f32;
+    let nchannels = 1 as usize;
+    let mut request = SampleRequestOptions {
+        sample_rate,
+        sample_clock,
+        nchannels,
+    };
+
+    // todo: this should match audio start time, not start of the loop
     let start_time = Instant::now();
     event_loop.run(move |event, _, control_flow| {
         // Pass the winit events to the platform integration.
@@ -258,6 +314,15 @@ fn main() {
         match event {
             RedrawRequested(..) => {
                 platform.update_time(start_time.elapsed().as_secs_f64());
+
+                let samples_per_sec = audio_texture_width;
+                let current_sample_index =
+                    start_time.elapsed().as_micros() as i64 * samples_per_sec as i64 / 1000000;
+                for i in next_sample_index..current_sample_index {
+                    request.tick();
+                    audio_data[(i % audio_samples_buffer_size) as usize] = request.tone(500.0);
+                }
+                next_sample_index = current_sample_index;
 
                 let output_frame = match surface.get_current_texture() {
                     Ok(frame) => frame,
@@ -290,6 +355,35 @@ fn main() {
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("encoder"),
                 });
+
+                let v_bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(
+                        audio_data.as_ptr() as *const u8,
+                        audio_data.len() * std::mem::size_of::<f32>(),
+                    )
+                };
+
+                queue.write_texture(
+                    ImageCopyTexture {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    v_bytes,
+                    wgpu::ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: NonZeroU32::new(
+                            audio_texture_width * std::mem::size_of::<f32>() as u32,
+                        ),
+                        rows_per_image: NonZeroU32::new(audio_texture_height),
+                    },
+                    wgpu::Extent3d {
+                        width: audio_texture_width,
+                        height: audio_texture_height,
+                        depth_or_array_layers: 1,
+                    },
+                );
 
                 {
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
