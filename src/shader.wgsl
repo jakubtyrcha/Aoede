@@ -28,6 +28,6 @@ var sam: sampler;
 
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
-    let sampleLoc = vec2<i32>(vertex.tex_coords) * uniforms.size;
-    return vec4<f32>(textureLoad(tex, sampleLoc, 0).r, 0.0, 0.0, 1.0);
+    let sampleLoc = vec2<i32>(vertex.tex_coords * vec2<f32>(uniforms.size));
+    return vec4<f32>(textureLoad(tex, sampleLoc, 0).r * 0.5 + 0.5, 0.0, 0.0, 1.0);
 }
