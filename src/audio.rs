@@ -4,6 +4,7 @@ pub struct SampleRequestOptions {
     pub sample_rate: f32,
     pub sample_clock: f32,
     pub nchannels: usize,
+    pub index: usize,
 }
 
 impl SampleRequestOptions {
@@ -17,14 +18,14 @@ impl SampleRequestOptions {
 
 pub fn stream_setup_for<F>(on_sample: F) -> Result<cpal::Stream, anyhow::Error>
 where
-    F: FnMut(&mut SampleRequestOptions) -> f32 + std::marker::Send + 'static + Clone,
+    F: FnMut(&mut SampleRequestOptions) -> f32 + std::marker::Send + 'static + Copy,
 {
     let (_host, device, config) = host_device_setup()?;
 
     match config.sample_format() {
-        cpal::SampleFormat::F32 => stream_make::<f32, _>(&device, &config.into(), on_sample.clone()),
-        cpal::SampleFormat::I16 => stream_make::<i16, _>(&device, &config.into(), on_sample.clone()),
-        cpal::SampleFormat::U16 => stream_make::<u16, _>(&device, &config.into(), on_sample.clone()),
+        cpal::SampleFormat::F32 => stream_make::<f32, _>(&device, &config.into(), on_sample),
+        cpal::SampleFormat::I16 => stream_make::<i16, _>(&device, &config.into(), on_sample),
+        cpal::SampleFormat::U16 => stream_make::<u16, _>(&device, &config.into(), on_sample),
     }
 }
 
@@ -50,22 +51,24 @@ pub fn stream_make<T, F>(
 ) -> Result<cpal::Stream, anyhow::Error>
 where
     T: cpal::Sample,
-    F: FnMut(&mut SampleRequestOptions) -> f32 + std::marker::Send + 'static + Clone,
+    F: FnMut(&mut SampleRequestOptions) -> f32 + std::marker::Send + 'static + Copy,
 {
     let sample_rate = config.sample_rate.0 as f32;
     let sample_clock = 0f32;
     let nchannels = config.channels as usize;
+    let index = 0;
     let mut request = SampleRequestOptions {
         sample_rate,
         sample_clock,
         nchannels,
+        index
     };
     let err_fn = |err| eprintln!("Error building output sound stream: {}", err);
 
     let stream = device.build_output_stream(
         config,
         move |output: &mut [T], _: &cpal::OutputCallbackInfo| {
-            on_window(output, &mut request, on_sample.clone())
+            on_window(output, &mut request, on_sample)
         },
         err_fn,
     )?;

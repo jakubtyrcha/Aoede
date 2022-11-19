@@ -2,13 +2,14 @@ use std::borrow::Cow;
 use std::iter;
 use std::num::NonZeroU32;
 use std::sync::atomic::AtomicI32;
+use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use audio::{stream_setup_for, SampleRequestOptions};
 use bytemuck::{Pod, Zeroable};
-use cpal::Sample;
 use cpal::traits::StreamTrait;
+use cpal::Sample;
 
 use ::egui::FontDefinitions;
 use chrono::Timelike;
@@ -38,6 +39,33 @@ struct Uniforms {
 
 //
 
+#[derive(Copy, Clone)]
+struct SampleSetup {
+    sample_rate: u32,
+    nchannels: usize,
+}
+
+#[derive(Copy, Clone)]
+struct AudioSampleGenerator {
+    // hz
+    sin0_freq: f32,
+    sin0_phase: f32,
+    sin0_vol: f32,
+    sin1_freq: f32,
+    sin1_phase: f32,
+    sin1_vol: f32,
+}
+
+impl AudioSampleGenerator {
+    fn generate(&self, setup: SampleSetup, sample_index: i32) -> f32 {
+        let t_sec = sample_index as f32 / setup.sample_rate as f32;
+        let wave0 = (t_sec * self.sin0_freq * 2.0 * std::f32::consts::PI + self.sin0_phase).sin();
+        let wave1 = (t_sec * self.sin1_freq * 2.0 * std::f32::consts::PI + self.sin1_phase).sin();
+        let sum = wave0 * self.sin0_vol + wave1 * self.sin1_vol;
+        sum
+    }
+}
+
 // API
 // one buffer (array?)
 // updated from the audio thread?
@@ -47,22 +75,9 @@ struct Uniforms {
 
 // sample rate
 // nchannels
-struct SampleSetup {
-    sample_rate: u32,
-    nchannels: usize,
-}
-
-struct AudioSampleGenerator {
-    sin0_freq: f32,
-    sin0_vol: f32,
-    sin0_phase: f32,
-    sin1_freq: f32,
-    sin1_vol: f32,
-    sin1_phase: f32,
-}
 
 struct AudioSampleRingbuffer {
-    buffer: Vec::<AtomicI32>,
+    buffer: Vec<AtomicI32>,
     next_sample_write: AtomicI32,
 }
 
@@ -70,51 +85,71 @@ impl AudioSampleRingbuffer {
     fn new(size: usize) -> AudioSampleRingbuffer {
         let mut buffer = Vec::new();
         buffer.resize_with(size, || AtomicI32::new(0));
-        AudioSampleRingbuffer{ 
-            buffer: buffer, 
-            next_sample_write: AtomicI32::new(0) }
+        AudioSampleRingbuffer {
+            buffer: buffer,
+            next_sample_write: AtomicI32::new(0),
+        }
     }
 
     fn write(&mut self, value: i32) {
         let N = self.buffer.len();
-        let write_sample = self.next_sample_write.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let write_sample = self
+            .next_sample_write
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let write_index = write_sample as usize % N;
         self.buffer[write_index].store(value, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
-struct AudioSampleProducer <'a> {
-    // setup: SampleSetup,
-    // config: AudioGeneratorConfig,
-    // config_rx: std::sync::mpsc::Receiver<AudioGeneratorConfig>,
-    write_buffer: &'a mut AudioSampleRingbuffer
+struct AudioSampleProducer<'a> {
+    setup: SampleSetup,
+    config: AudioSampleGenerator,
+    config_tx: std::sync::mpsc::Receiver<AudioSampleGenerator>,
+    write_buffer: &'a mut AudioSampleRingbuffer,
 }
 
-impl <'a> AudioSampleProducer <'a> {
-    fn new(write_buffer: &'a mut AudioSampleRingbuffer) -> AudioSampleProducer<'a> {
-        AudioSampleProducer{ write_buffer }
+impl<'a> AudioSampleProducer<'a> {
+    fn new(
+        setup: SampleSetup,
+        config: AudioSampleGenerator,
+        config_tx: std::sync::mpsc::Receiver<AudioSampleGenerator>,
+        write_buffer: &'a mut AudioSampleRingbuffer,
+    ) -> AudioSampleProducer<'a> {
+        AudioSampleProducer {
+            setup,
+            config,
+            config_tx,
+            write_buffer,
+        }
     }
 
-    fn write_sample(&mut self, value : i32) {
+    fn write_sample(&mut self, value: i32) {
         self.write_buffer.write(value);
     }
 }
 
-struct AudioSampleViewer <'a> {
+struct AudioSampleViewer<'a> {
     buffer: &'a AudioSampleRingbuffer,
     next_sample_read: i32,
 }
 
-impl <'a> AudioSampleViewer<'a> {
+impl<'a> AudioSampleViewer<'a> {
     fn new(buffer: &'a AudioSampleRingbuffer) -> AudioSampleViewer<'a> {
-        AudioSampleViewer{ buffer, next_sample_read: 0 }
+        AudioSampleViewer {
+            buffer,
+            next_sample_read: 0,
+        }
     }
 
     fn next(&mut self) -> Option<i32> {
-        let buffer_sentinel = self.buffer.next_sample_write.load(std::sync::atomic::Ordering::SeqCst);
+        let buffer_sentinel = self
+            .buffer
+            .next_sample_write
+            .load(std::sync::atomic::Ordering::SeqCst);
         if self.next_sample_read < buffer_sentinel {
             let buffer_index = self.next_sample_read % self.buffer.buffer.len() as i32;
-            let value = self.buffer.buffer[buffer_index as usize].load(std::sync::atomic::Ordering::SeqCst);
+            let value =
+                self.buffer.buffer[buffer_index as usize].load(std::sync::atomic::Ordering::SeqCst);
             self.next_sample_read += 1;
             return Some(value);
         }
@@ -124,9 +159,14 @@ impl <'a> AudioSampleViewer<'a> {
 
 //
 
+static mut AUDIO_RINGBUFFER: Option<AudioSampleRingbuffer> = None;
+static mut AUDIO_SAMPLE_PRODUCER: Option<AudioSampleProducer> = None;
+
 struct MyApp {
     stream: cpal::Stream,
     state: Arc<Mutex<SharedState>>,
+    state1: AudioSampleGenerator,
+    rx: std::sync::mpsc::Sender<AudioSampleGenerator>,
 }
 
 struct SharedState {
@@ -140,14 +180,53 @@ impl Default for MyApp {
             freq: 1000.0,
             volume: 1.0,
         }));
-        let state_clone = Arc::clone(&state);
+
+        let sample_setup = SampleSetup {
+            sample_rate: 48000,
+            nchannels: 2,
+        };
+
+        let samplegen = AudioSampleGenerator {
+            sin0_freq: 1000.0,
+            sin0_phase: 0.0,
+            sin0_vol: 0.5,
+            sin1_freq: 500.0,
+            sin1_phase: 0.0,
+            sin1_vol: 0.0,
+        };
+
+        let (rx, tx) = channel();
+
+        //let state_clone = Arc::clone(&state);
+        unsafe {
+            AUDIO_RINGBUFFER = Some(AudioSampleRingbuffer::new(256));
+            AUDIO_SAMPLE_PRODUCER = Some(AudioSampleProducer::new(
+                sample_setup,
+                samplegen,
+                tx,
+                unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() },
+            ));
+        }
         let result = MyApp {
             stream: stream_setup_for(move |o: &mut SampleRequestOptions| {
-                o.tick();
-                let state = state_clone.lock().unwrap();
-                o.tone(state.freq) * state.volume
+                let mut sample = 0.0;
+                unsafe {
+                    sample = AUDIO_SAMPLE_PRODUCER
+                        .as_mut()
+                        .unwrap()
+                        .config
+                        .generate(AUDIO_SAMPLE_PRODUCER.as_mut().unwrap().setup, o.index as i32);
+                        o.index += 1;
+                    AUDIO_SAMPLE_PRODUCER.as_mut().unwrap().write_sample(0);
+                }
+                sample
+                // o.tick();
+                // let state = state_clone.lock().unwrap();
+                // o.tone(state.freq) * state.volume
             })
             .unwrap(),
+            state1: samplegen,
+            rx,
             state: state,
         };
         result.stream.play().unwrap();
@@ -247,10 +326,25 @@ fn main() {
 
     // Display the demo application that ships with egui.
 
-    let mut audio_buffer = AudioSampleRingbuffer::new(256);
-    audio_buffer.buffer.resize_with(256, || AtomicI32::new(0));
+    let sample_setup = SampleSetup {
+        sample_rate: 48000,
+        nchannels: 2,
+    };
 
-    let mut producer = AudioSampleProducer::new(&mut audio_buffer);
+    let samplegen = AudioSampleGenerator {
+        sin0_freq: 1000.0,
+        sin0_phase: 0.0,
+        sin0_vol: 0.5,
+        sin1_freq: 500.0,
+        sin1_phase: 0.0,
+        sin1_vol: 0.0,
+    };
+
+    let (rx, tx) = channel();
+
+    let mut audio_buffer = AudioSampleRingbuffer::new(256);
+
+    let mut producer = AudioSampleProducer::new(sample_setup, samplegen, tx, &mut audio_buffer);
 
     producer.write_sample(0);
     producer.write_sample(16);
@@ -409,6 +503,7 @@ fn main() {
         sample_rate,
         sample_clock,
         nchannels,
+        index: 0
     };
 
     // todo: this should match audio start time, not start of the loop
