@@ -6,7 +6,7 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use audio::{stream_setup_for, SampleRequestOptions};
+use audio::{stream_setup_for};
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
 use cpal::Sample;
@@ -66,16 +66,6 @@ impl AudioSampleGenerator {
     }
 }
 
-// API
-// one buffer (array?)
-// updated from the audio thread?
-// audio thread evaluates new samples and writes to the array
-
-// app reads from the buffer, also updates config!
-
-// sample rate
-// nchannels
-
 struct AudioSampleRingbuffer {
     buffer: Vec<AtomicU32>,
     next_sample_write: AtomicI32,
@@ -106,6 +96,7 @@ struct AudioSampleProducer<'a> {
     config: AudioSampleGenerator,
     config_tx: std::sync::mpsc::Receiver<AudioSampleGenerator>,
     write_buffer: &'a mut AudioSampleRingbuffer,
+    sample_index: i32,
 }
 
 impl<'a> AudioSampleProducer<'a> {
@@ -120,6 +111,7 @@ impl<'a> AudioSampleProducer<'a> {
             config,
             config_tx,
             write_buffer,
+            sample_index: 0,
         }
     }
 
@@ -160,7 +152,6 @@ impl<'a> AudioSampleViewer<'a> {
 //
 
 static mut AUDIO_RINGBUFFER: Option<AudioSampleRingbuffer> = None;
-static mut AUDIO_SAMPLE_PRODUCER: Option<AudioSampleProducer> = None;
 
 struct MyApp {
     stream: cpal::Stream,
@@ -187,30 +178,26 @@ impl Default for MyApp {
         let (rx, tx) = channel();
 
         unsafe {
-            AUDIO_RINGBUFFER = Some(AudioSampleRingbuffer::new(256));
-            AUDIO_SAMPLE_PRODUCER = Some(AudioSampleProducer::new(
+            AUDIO_RINGBUFFER = Some(AudioSampleRingbuffer::new(480 * 10));
+        }
+        let result = MyApp {
+            stream: stream_setup_for(move |o: &mut AudioSampleProducer| {
+                let mut sample = 0.0;
+                if let Ok(config) = o.config_tx.try_recv() {
+                    o.config = config;
+                }
+
+                sample = o.config.generate(o.setup, o.sample_index);
+                o.sample_index += 1;
+                o.write_sample(sample.to_bits());
+                sample
+            }, 
+            AudioSampleProducer::new(
                 sample_setup,
                 samplegen,
                 tx,
-                AUDIO_RINGBUFFER.as_mut().unwrap(),
-            ));
-        }
-        let result = MyApp {
-            stream: stream_setup_for(move |o: &mut SampleRequestOptions| {
-                let mut sample = 0.0;
-                unsafe {
-                    let mut producer = AUDIO_SAMPLE_PRODUCER.as_mut().unwrap();
-
-                    if let Ok(config) = producer.config_tx.try_recv() {
-                        producer.config = config;
-                    }
-
-                    sample = producer.config.generate(producer.setup, o.index as i32);
-                    o.index += 1;
-                    producer.write_sample(sample.to_bits());
-                }
-                sample
-            })
+                unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() },
+            ))
             .unwrap(),
             state1: samplegen,
             rx,
@@ -224,7 +211,6 @@ impl MyApp {
     pub fn ui(&mut self, ctx: &Context) {
         egui::Window::new("Demo").show(ctx, |ui| {
             ui.heading("My egui Application");
-            //let mut state = self.state.lock();
             let config = &mut self.state1;
             let mut changed = false;
             changed |= ui
