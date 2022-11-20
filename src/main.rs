@@ -40,12 +40,6 @@ struct Uniforms {
 //
 
 #[derive(Copy, Clone)]
-struct SampleSetup {
-    sample_rate: u32,
-    nchannels: usize,
-}
-
-#[derive(Copy, Clone)]
 struct AudioSampleGenerator {
     // hz
     sin0_freq: f32,
@@ -57,8 +51,8 @@ struct AudioSampleGenerator {
 }
 
 impl AudioSampleGenerator {
-    fn generate(&self, setup: SampleSetup, sample_index: i32) -> f32 {
-        let t_sec = sample_index as f32 / setup.sample_rate as f32;
+    fn generate(&self, stream_config: &cpal::StreamConfig, sample_index: i32) -> f32 {
+        let t_sec = sample_index as f32 / stream_config.sample_rate.0 as f32;
         let wave0 = (t_sec * self.sin0_freq * 2.0 * std::f32::consts::PI + self.sin0_phase).sin();
         let wave1 = (t_sec * self.sin1_freq * 2.0 * std::f32::consts::PI + self.sin1_phase).sin();
         let sum = wave0 * self.sin0_vol + wave1 * self.sin1_vol;
@@ -92,7 +86,7 @@ impl AudioSampleRingbuffer {
 }
 
 struct AudioSampleProducer<'a> {
-    setup: SampleSetup,
+    stream_config: Option<cpal::StreamConfig>,
     config: AudioSampleGenerator,
     config_tx: std::sync::mpsc::Receiver<AudioSampleGenerator>,
     write_buffer: &'a mut AudioSampleRingbuffer,
@@ -101,13 +95,12 @@ struct AudioSampleProducer<'a> {
 
 impl<'a> AudioSampleProducer<'a> {
     fn new(
-        setup: SampleSetup,
         config: AudioSampleGenerator,
         config_tx: std::sync::mpsc::Receiver<AudioSampleGenerator>,
         write_buffer: &'a mut AudioSampleRingbuffer,
     ) -> AudioSampleProducer<'a> {
         AudioSampleProducer {
-            setup,
+            stream_config: None,
             config,
             config_tx,
             write_buffer,
@@ -117,6 +110,12 @@ impl<'a> AudioSampleProducer<'a> {
 
     fn write_sample(&mut self, value: u32) {
         self.write_buffer.write(value);
+    }
+}
+
+impl <'a> audio::SampleProducer for AudioSampleProducer<'a> {
+    fn set_stream_config(&mut self, stream_config: cpal::StreamConfig) {
+        self.stream_config = Some(stream_config);
     }
 }
 
@@ -131,6 +130,10 @@ impl<'a> AudioSampleViewer<'a> {
             buffer,
             next_sample_read: 0,
         }
+    }
+
+    fn skip_n_samples(&mut self, jump : i32) {
+        self.next_sample_read += jump;
     }
 
     fn next(&mut self) -> Option<u32> {
@@ -155,17 +158,12 @@ static mut AUDIO_RINGBUFFER: Option<AudioSampleRingbuffer> = None;
 
 struct MyApp {
     stream: cpal::Stream,
-    state1: AudioSampleGenerator,
+    state: AudioSampleGenerator,
     rx: std::sync::mpsc::Sender<AudioSampleGenerator>,
 }
 
 impl Default for MyApp {
     fn default() -> Self {
-        let sample_setup = SampleSetup {
-            sample_rate: 48000,
-            nchannels: 2,
-        };
-
         let samplegen = AudioSampleGenerator {
             sin0_freq: 1000.0,
             sin0_phase: 0.0,
@@ -178,7 +176,7 @@ impl Default for MyApp {
         let (rx, tx) = channel();
 
         unsafe {
-            AUDIO_RINGBUFFER = Some(AudioSampleRingbuffer::new(480 * 10));
+            AUDIO_RINGBUFFER = Some(AudioSampleRingbuffer::new(480 * 100));
         }
         let result = MyApp {
             stream: stream_setup_for(move |o: &mut AudioSampleProducer| {
@@ -187,19 +185,18 @@ impl Default for MyApp {
                     o.config = config;
                 }
 
-                sample = o.config.generate(o.setup, o.sample_index);
+                sample = o.config.generate(o.stream_config.as_ref().unwrap(), o.sample_index);
                 o.sample_index += 1;
                 o.write_sample(sample.to_bits());
                 sample
             }, 
             AudioSampleProducer::new(
-                sample_setup,
                 samplegen,
                 tx,
                 unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() },
             ))
             .unwrap(),
-            state1: samplegen,
+            state: samplegen,
             rx,
         };
         result.stream.play().unwrap();
@@ -211,7 +208,7 @@ impl MyApp {
     pub fn ui(&mut self, ctx: &Context) {
         egui::Window::new("Demo").show(ctx, |ui| {
             ui.heading("My egui Application");
-            let config = &mut self.state1;
+            let config = &mut self.state;
             let mut changed = false;
             changed |= ui
                 .add(egui::Slider::new(&mut config.sin0_freq, 10.0..=1000.0).text("Frequency 0"))
@@ -234,7 +231,7 @@ impl MyApp {
                 .changed();
 
             if changed {
-                self.rx.send(self.state1).unwrap();
+                self.rx.send(self.state).unwrap();
             }
         });
     }
@@ -314,39 +311,6 @@ fn main() {
     // We use the egui_wgpu_backend crate as the render backend.
     let mut egui_rpass = RenderPass::new(&device, surface_format, 1);
 
-    // Display the demo application that ships with egui.
-
-    // let sample_setup = SampleSetup {
-    //     sample_rate: 48000,
-    //     nchannels: 2,
-    // };
-
-    // let samplegen = AudioSampleGenerator {
-    //     sin0_freq: 1000.0,
-    //     sin0_phase: 0.0,
-    //     sin0_vol: 0.5,
-    //     sin1_freq: 500.0,
-    //     sin1_phase: 0.0,
-    //     sin1_vol: 0.0,
-    // };
-
-    // let (rx, tx) = channel();
-
-    // let mut audio_buffer = AudioSampleRingbuffer::new(256);
-
-    // let mut producer = AudioSampleProducer::new(sample_setup, samplegen, tx, &mut audio_buffer);
-
-    // producer.write_sample(0);
-    // producer.write_sample(16);
-    // producer.write_sample(256);
-
-    // let mut reader = AudioSampleViewer::new(unsafe { &mut audio_buffer });
-
-    // println!("{:?}", reader.next());
-    // println!("{:?}", reader.next());
-    // println!("{:?}", reader.next());
-
-    //let mut demo_app = egui_demo_lib::DemoWindows::default();
     let mut app: MyApp = MyApp::default();
 
     let mut reader = AudioSampleViewer::new(unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
@@ -478,15 +442,15 @@ fn main() {
         multiview: None,
     });
 
-    let audio_samples_buffer_size = (audio_texture_width * audio_texture_height) as i64;
+    let audio_samples_tex_buffer_size = (audio_texture_width * audio_texture_height) as i64;
     let mut audio_data = Vec::from_iter(
         [0.0 as f32]
             .iter()
             .cycle()
-            .take(audio_samples_buffer_size as usize)
+            .take(audio_samples_tex_buffer_size as usize)
             .cloned(),
     );
-    let mut next_sample_index: i64 = 0;
+    let mut next_audio_sample_index: i64 = 0;
 
     // let sample_rate = 480000 as f32;
     // let sample_clock = 0f32;
@@ -509,13 +473,15 @@ fn main() {
                 platform.update_time(start_time.elapsed().as_secs_f64());
 
                 let samples_per_sec = audio_texture_width;
-                let current_sample_index =
+                let current_texture_sample_index =
                     start_time.elapsed().as_micros() as i64 * samples_per_sec as i64 / 1000000;
 
+                let jump = 48000 / 480;
                 while let Some(sample) = reader.next() {
-                    audio_data[(next_sample_index % audio_samples_buffer_size) as usize] =
+                    audio_data[(next_audio_sample_index % audio_samples_tex_buffer_size) as usize] =
                         f32::from_bits(sample as u32);
-                    next_sample_index += 1;
+                        next_audio_sample_index += 1;
+                    reader.skip_n_samples(jump - 1);
                 }
                 // for i in next_sample_index..current_sample_index {
                 //     request.tick();

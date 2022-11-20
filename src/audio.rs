@@ -1,10 +1,14 @@
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
+pub trait SampleProducer {
+    fn set_stream_config(&mut self, stream_config: cpal::StreamConfig);
+}
+
 pub fn stream_setup_for<F, G>(on_sample: F, context: G) -> Result<cpal::Stream, anyhow::Error>
 where
     F: FnMut(&mut G) -> f32 + std::marker::Send + 'static + Copy,
-    G: std::marker::Send + 'static
+    G: std::marker::Send + 'static + SampleProducer
 {
     let (_host, device, config) = host_device_setup()?;
 
@@ -39,9 +43,11 @@ pub fn stream_make<T, F, G>(
 where
     T: cpal::Sample,
     F: FnMut(&mut G) -> f32 + std::marker::Send + 'static + Copy,
-    G: std::marker::Send + 'static
+    G: std::marker::Send + 'static + SampleProducer
 {
     let err_fn = |err| eprintln!("Error building output sound stream: {}", err);
+
+    context.set_stream_config(config.clone());
 
     let stream = device.build_output_stream(
         config,
@@ -60,7 +66,7 @@ where
     F: FnMut(&mut G) -> f32 + std::marker::Send + 'static,
 {
     let nchannels = 2;
-    for frame in output.chunks_mut(2) {
+    for frame in output.chunks_mut(nchannels) {
         let value: T = cpal::Sample::from::<f32>(&on_sample(context));
         for sample in frame.iter_mut() {
             *sample = value;
