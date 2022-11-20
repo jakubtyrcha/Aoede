@@ -164,23 +164,12 @@ static mut AUDIO_SAMPLE_PRODUCER: Option<AudioSampleProducer> = None;
 
 struct MyApp {
     stream: cpal::Stream,
-    state: Arc<Mutex<SharedState>>,
     state1: AudioSampleGenerator,
     rx: std::sync::mpsc::Sender<AudioSampleGenerator>,
 }
 
-struct SharedState {
-    freq: f32,
-    volume: f32,
-}
-
 impl Default for MyApp {
     fn default() -> Self {
-        let state = Arc::new(Mutex::new(SharedState {
-            freq: 1000.0,
-            volume: 1.0,
-        }));
-
         let sample_setup = SampleSetup {
             sample_rate: 48000,
             nchannels: 2,
@@ -197,43 +186,34 @@ impl Default for MyApp {
 
         let (rx, tx) = channel();
 
-        //let state_clone = Arc::clone(&state);
         unsafe {
             AUDIO_RINGBUFFER = Some(AudioSampleRingbuffer::new(256));
             AUDIO_SAMPLE_PRODUCER = Some(AudioSampleProducer::new(
                 sample_setup,
                 samplegen,
                 tx,
-                unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() },
+                AUDIO_RINGBUFFER.as_mut().unwrap(),
             ));
         }
         let result = MyApp {
             stream: stream_setup_for(move |o: &mut SampleRequestOptions| {
                 let mut sample = 0.0;
                 unsafe {
-                    let mut producer = AUDIO_SAMPLE_PRODUCER
-                    .as_mut()
-                    .unwrap();
+                    let mut producer = AUDIO_SAMPLE_PRODUCER.as_mut().unwrap();
 
                     if let Ok(config) = producer.config_tx.try_recv() {
                         producer.config = config;
                     }
 
-                    sample = producer
-                        .config
-                        .generate(producer.setup, o.index as i32);
-                        o.index += 1;
+                    sample = producer.config.generate(producer.setup, o.index as i32);
+                    o.index += 1;
                     producer.write_sample(sample.to_bits());
                 }
                 sample
-                // o.tick();
-                // let state = state_clone.lock().unwrap();
-                // o.tone(state.freq) * state.volume
             })
             .unwrap(),
             state1: samplegen,
             rx,
-            state: state,
         };
         result.stream.play().unwrap();
         result
@@ -247,31 +227,27 @@ impl MyApp {
             //let mut state = self.state.lock();
             let config = &mut self.state1;
             let mut changed = false;
-            changed |= ui.add(
-                egui::Slider::new(&mut config.sin0_freq, 10.0..=1000.0)
-                    .text("Frequency 0"),
-            ).changed();
-            changed |= ui.add(
-                egui::Slider::new(&mut config.sin0_phase, 0.0..=3.14159)
-                    .text("Phase 0"),
-            ).changed();
-            changed |= ui.add(
-                egui::Slider::new(&mut config.sin0_vol, 0.0..=2.0).text("Volume 0"),
-            ).changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut config.sin0_freq, 10.0..=1000.0).text("Frequency 0"))
+                .changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut config.sin0_phase, 0.0..=3.14159).text("Phase 0"))
+                .changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut config.sin0_vol, 0.0..=2.0).text("Volume 0"))
+                .changed();
 
-            changed |= ui.add(
-                egui::Slider::new(&mut config.sin1_freq, 10.0..=1000.0)
-                    .text("Frequency 1"),
-            ).changed();
-            changed |= ui.add(
-                egui::Slider::new(&mut config.sin1_phase, 0.0..=3.14159)
-                    .text("Phase 1"),
-            ).changed();
-            changed |= ui.add(
-                egui::Slider::new(&mut config.sin1_vol, 0.0..=2.0).text("Volume 1"),
-            ).changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut config.sin1_freq, 10.0..=1000.0).text("Frequency 1"))
+                .changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut config.sin1_phase, 0.0..=3.14159).text("Phase 1"))
+                .changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut config.sin1_vol, 0.0..=2.0).text("Volume 1"))
+                .changed();
 
-            if(changed) {
+            if changed {
                 self.rx.send(self.state1).unwrap();
             }
         });
@@ -551,7 +527,8 @@ fn main() {
                     start_time.elapsed().as_micros() as i64 * samples_per_sec as i64 / 1000000;
 
                 while let Some(sample) = reader.next() {
-                    audio_data[(next_sample_index % audio_samples_buffer_size) as usize] = f32::from_bits(sample as u32);
+                    audio_data[(next_sample_index % audio_samples_buffer_size) as usize] =
+                        f32::from_bits(sample as u32);
                     next_sample_index += 1;
                 }
                 // for i in next_sample_index..current_sample_index {
