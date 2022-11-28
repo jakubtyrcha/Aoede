@@ -6,7 +6,7 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use audio::{stream_setup_for};
+use audio::stream_setup_for;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
 use cpal::Sample;
@@ -16,14 +16,18 @@ use chrono::Timelike;
 use egui::Context;
 use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
+use synthesis::{Add, Gain, NodeGraph, SineOscillator};
 use wgpu::util::DeviceExt;
 use wgpu::{ImageCopyTexture, ImageDataLayout, Origin3d};
 use winit::event::Event::*;
 use winit::event_loop::ControlFlow;
+
+use crate::synthesis::Delay;
 const INITIAL_WIDTH: u32 = 1920;
 const INITIAL_HEIGHT: u32 = 1080;
 
 mod audio;
+mod synthesis;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -113,7 +117,7 @@ impl<'a> AudioSampleProducer<'a> {
     }
 }
 
-impl <'a> audio::SampleProducer for AudioSampleProducer<'a> {
+impl<'a> audio::SampleProducer for AudioSampleProducer<'a> {
     fn set_stream_config(&mut self, stream_config: cpal::StreamConfig) {
         self.stream_config = Some(stream_config);
     }
@@ -132,7 +136,7 @@ impl<'a> AudioSampleViewer<'a> {
         }
     }
 
-    fn skip_n_samples(&mut self, jump : i32) {
+    fn skip_n_samples(&mut self, jump: i32) {
         self.next_sample_read += jump;
     }
 
@@ -179,22 +183,24 @@ impl Default for MyApp {
             AUDIO_RINGBUFFER = Some(AudioSampleRingbuffer::new(480 * 100));
         }
         let result = MyApp {
-            stream: stream_setup_for(move |o: &mut AudioSampleProducer| {
-                let mut sample = 0.0;
-                if let Ok(config) = o.config_tx.try_recv() {
-                    o.config = config;
-                }
+            stream: stream_setup_for(
+                move |o: &mut AudioSampleProducer| {
+                    let mut sample = 0.0;
+                    if let Ok(config) = o.config_tx.try_recv() {
+                        o.config = config;
+                    }
 
-                sample = o.config.generate(o.stream_config.as_ref().unwrap(), o.sample_index);
-                o.sample_index += 1;
-                o.write_sample(sample.to_bits());
-                sample
-            }, 
-            AudioSampleProducer::new(
-                samplegen,
-                tx,
-                unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() },
-            ))
+                    sample = o
+                        .config
+                        .generate(o.stream_config.as_ref().unwrap(), o.sample_index);
+                    o.sample_index += 1;
+                    o.write_sample(sample.to_bits());
+                    sample
+                },
+                AudioSampleProducer::new(samplegen, tx, unsafe {
+                    AUDIO_RINGBUFFER.as_mut().unwrap()
+                }),
+            )
             .unwrap(),
             state: samplegen,
             rx,
@@ -254,6 +260,22 @@ impl epi::backend::RepaintSignal for ExampleRepaintSignal {
 
 /// A simple egui + wgpu + winit based example.
 fn main() {
+    let mut graph = NodeGraph::new();
+    let sine = graph.add_node(Box::new(SineOscillator { freq: 1.0 }));
+    let delay = graph.add_node(Box::new(Delay {
+        delay_samples: 1,
+        buffered_samples: Vec::new(),
+    }));
+    let mix = graph.add_node(Box::new(Add {}));
+    graph.link(sine, mix);
+    graph.link(mix, delay);
+    graph.link(delay, mix);
+    graph.set_sample_rate(4);
+
+    for i in 0..4 {
+        println!("{}", graph.gen_next_sample(mix));
+    }
+
     let event_loop = winit::event_loop::EventLoopBuilder::<Event>::with_user_event().build();
     let window = winit::window::WindowBuilder::new()
         .with_decorations(true)
@@ -478,9 +500,10 @@ fn main() {
 
                 let jump = 48000 / 480;
                 while let Some(sample) = reader.next() {
-                    audio_data[(next_audio_sample_index % audio_samples_tex_buffer_size) as usize] =
+                    audio_data
+                        [(next_audio_sample_index % audio_samples_tex_buffer_size) as usize] =
                         f32::from_bits(sample as u32);
-                        next_audio_sample_index += 1;
+                    next_audio_sample_index += 1;
                     reader.skip_n_samples(jump - 1);
                 }
                 // for i in next_sample_index..current_sample_index {
