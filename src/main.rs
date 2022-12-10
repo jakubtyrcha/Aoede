@@ -3,22 +3,21 @@ use std::iter;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use audio::stream_setup_for;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
-use cpal::Sample;
 
 use ::egui::FontDefinitions;
 use chrono::Timelike;
 use egui::Context;
+use egui::plot;
 use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
-use synthesis::{Add, Gain, NodeGraph, SineOscillator};
+use synthesis::{Add, NodeGraph, SineOscillator};
 use wgpu::util::DeviceExt;
-use wgpu::{ImageCopyTexture, ImageDataLayout, Origin3d};
+use wgpu::{ImageCopyTexture, Origin3d};
 use winit::event::Event::*;
 use winit::event_loop::ControlFlow;
 
@@ -185,12 +184,11 @@ impl Default for MyApp {
         let result = MyApp {
             stream: stream_setup_for(
                 move |o: &mut AudioSampleProducer| {
-                    let mut sample = 0.0;
                     if let Ok(config) = o.config_tx.try_recv() {
                         o.config = config;
                     }
 
-                    sample = o
+                    let sample = o
                         .config
                         .generate(o.stream_config.as_ref().unwrap(), o.sample_index);
                     o.sample_index += 1;
@@ -211,7 +209,7 @@ impl Default for MyApp {
 }
 
 impl MyApp {
-    pub fn ui(&mut self, ctx: &Context) {
+    pub fn ui(&mut self, ctx: &Context, audio_data: &Vec<f32>) {
         egui::Window::new("Demo").show(ctx, |ui| {
             ui.heading("My egui Application");
             let config = &mut self.state;
@@ -239,6 +237,20 @@ impl MyApp {
             if changed {
                 self.rx.send(self.state).unwrap();
             }
+
+            let data_clone = audio_data.clone();
+
+            let points = plot::PlotPoints::from_explicit_callback(move |x: f64| {
+                let index = if x >= 0.0 { (x * 480.0) as usize } else { 0 };
+                if index < data_clone.len() {
+                    return data_clone[index] as f64
+                }
+                0.0
+            }, std::f64::NEG_INFINITY..std::f64::INFINITY, 1000);
+            
+            plot::Plot::new("Audio plot").data_aspect(1.0).show(ui, |plot_ui| {
+                plot_ui.line(plot::Line::new(points))
+            });
         });
     }
 }
@@ -260,22 +272,6 @@ impl epi::backend::RepaintSignal for ExampleRepaintSignal {
 
 /// A simple egui + wgpu + winit based example.
 fn main() {
-    let mut graph = NodeGraph::new();
-    let sine = graph.add_node(Box::new(SineOscillator { freq: 1.0 }));
-    let delay = graph.add_node(Box::new(Delay {
-        delay_samples: 1,
-        buffered_samples: Vec::new(),
-    }));
-    let mix = graph.add_node(Box::new(Add {}));
-    graph.link(sine, mix);
-    graph.link(mix, delay);
-    graph.link(delay, mix);
-    graph.set_sample_rate(4);
-
-    for i in 0..4 {
-        println!("{}", graph.gen_next_sample(mix));
-    }
-
     let event_loop = winit::event_loop::EventLoopBuilder::<Event>::with_user_event().build();
     let window = winit::window::WindowBuilder::new()
         .with_decorations(true)
@@ -495,8 +491,8 @@ fn main() {
                 platform.update_time(start_time.elapsed().as_secs_f64());
 
                 let samples_per_sec = audio_texture_width;
-                let current_texture_sample_index =
-                    start_time.elapsed().as_micros() as i64 * samples_per_sec as i64 / 1000000;
+                // let current_texture_sample_index =
+                //     start_time.elapsed().as_micros() as i64 * samples_per_sec as i64 / 1000000;
 
                 let jump = 48000 / 480;
                 while let Some(sample) = reader.next() {
@@ -534,7 +530,7 @@ fn main() {
 
                 // Draw the demo application.
                 //demo_app.ui(&platform.context());
-                app.ui(&platform.context());
+                app.ui(&platform.context(), &audio_data);
 
                 // End the UI frame. We could now handle the output and draw the UI with the backend.
                 let full_output = platform.end_frame(Some(&window));

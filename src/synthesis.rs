@@ -1,14 +1,13 @@
-use std::collections::HashSet;
-
-struct Context<'a> {
+pub struct Context<'a> {
     time: f32,
-    inputs: &'a Vec<i32>,
+    input_nodes: &'a Vec<i32>,
     outputs: &'a Vec<f32>,
 }
 
 pub trait NodeBehaviour {
     fn gen_next_sample(&self, context: Context) -> f32;
-    fn process_outputs(&mut self, context: Context);
+    fn process_outputs(&mut self, _: Context) {}
+    fn is_delay(&self) -> bool { false }
 }
 
 pub struct SineOscillator {
@@ -19,8 +18,25 @@ impl NodeBehaviour for SineOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
         (context.time * self.freq * 2.0 * std::f32::consts::PI).sin()
     }
+}
 
-    fn process_outputs(&mut self, context: Context) {}
+struct TestOscillator {
+    pub phase: f32,
+}
+
+impl NodeBehaviour for TestOscillator {
+    fn gen_next_sample(&self, _: Context) -> f32 {
+        self.phase
+    }
+
+    fn process_outputs(&mut self, _: Context) {
+        if self.phase == 1.0 {
+            self.phase = 0.0
+        }
+        else {
+            self.phase = 1.0
+        }
+    }
 }
 
 pub struct Gain {
@@ -29,12 +45,10 @@ pub struct Gain {
 
 impl NodeBehaviour for Gain {
     fn gen_next_sample(&self, context: Context) -> f32 {
-        let input_node = context.inputs[0];
+        let input_node = context.input_nodes[0];
         let input_sample = context.outputs[input_node as usize];
         input_sample * self.volume
     }
-
-    fn process_outputs(&mut self, context: Context) {}
 }
 
 pub struct Add {}
@@ -42,13 +56,11 @@ pub struct Add {}
 impl NodeBehaviour for Add {
     fn gen_next_sample(&self, context: Context) -> f32 {
         let mut acc = 0.0;
-        for input_node in context.inputs {
+        for input_node in context.input_nodes {
             acc += context.outputs[*input_node as usize];
         }
         acc
     }
-
-    fn process_outputs(&mut self, context: Context) {}
 }
 
 pub struct Delay {
@@ -57,7 +69,7 @@ pub struct Delay {
 }
 
 impl NodeBehaviour for Delay {
-    fn gen_next_sample(&self, context: Context) -> f32 {
+    fn gen_next_sample(&self, _: Context) -> f32 {
         if self.buffered_samples.len() >= self.delay_samples as usize {
             return self.buffered_samples
                 [self.buffered_samples.len() - self.delay_samples as usize];
@@ -66,9 +78,13 @@ impl NodeBehaviour for Delay {
     }
 
     fn process_outputs(&mut self, context: Context) {
-        let input_node = context.inputs[0];
+        let input_node = context.input_nodes[0];
         let input_sample = context.outputs[input_node as usize];
         self.buffered_samples.push(input_sample);
+    }
+
+    fn is_delay(&self) -> bool {
+        true
     }
 }
 
@@ -80,7 +96,7 @@ struct Node {
 pub struct NodeGraph {
     next_id: i32,
     nodes: Vec<Node>,
-    node_inputs: Vec<Vec<i32>>,
+    node_input_nodes: Vec<Vec<i32>>,
     sample_rate: i32,
     current_sample: i32,
 }
@@ -90,7 +106,7 @@ impl NodeGraph {
         NodeGraph {
             next_id: 0,
             nodes: Vec::new(),
-            node_inputs: Vec::new(),
+            node_input_nodes: Vec::new(),
             sample_rate: 0,
             current_sample: -1,
         }
@@ -101,14 +117,14 @@ impl NodeGraph {
             id: self.next_id,
             behaviour,
         });
-        self.node_inputs.push(Vec::new());
+        self.node_input_nodes.push(Vec::new());
         let id = self.next_id;
         self.next_id += 1;
         id
     }
 
     pub fn link(&mut self, node_from: i32, node_to: i32) {
-        self.node_inputs[node_to as usize].push(node_from);
+        self.node_input_nodes[node_to as usize].push(node_from);
     }
 
     pub fn set_sample_rate(&mut self, num: i32) {
@@ -120,34 +136,34 @@ impl NodeGraph {
         let mut next_index = 0;
         // find initial nodes
 
-        let mut outputs = Vec::<Vec<i32>>::new();
-        let mut node_inputs_count = Vec::<i32>::new();
-        outputs.resize_with(self.nodes.len(), || Vec::new());
-        node_inputs_count.resize(self.nodes.len(), 0);
+        let mut output_nodes = Vec::<Vec<i32>>::new();
+        let mut node_input_nodes_count = Vec::<i32>::new();
+        output_nodes.resize_with(self.nodes.len(), || Vec::new());
+        node_input_nodes_count.resize(self.nodes.len(), 0);
         for node in &self.nodes {
-            let inputs_num = self.node_inputs[node.id as usize].len() as i32;
-            node_inputs_count[node.id as usize] = inputs_num;
-
-            if inputs_num == 0 {
-                topo_sort.push(node.id);
+            for input_node_index in &self.node_input_nodes[node.id as usize] {
+                // delay are not treated as inputs for the graph
+                if !self.nodes[*input_node_index as usize].behaviour.is_delay() {
+                    output_nodes[*input_node_index as usize].push(node.id);
+                    node_input_nodes_count[node.id as usize] += 1;
+                }
             }
 
-            for input in &self.node_inputs[node.id as usize] {
-                outputs[*input as usize].push(node.id);
+            if node_input_nodes_count[node.id as usize] == 0 {
+                topo_sort.push(node.id);
             }
         }
 
         while next_index < topo_sort.len() {
-            println!("topo {} {:?}", next_index, topo_sort[next_index]);
             // pop from set
             let v = topo_sort[next_index];
             next_index += 1;
 
             // iter outputs
-            for output in &outputs[v as usize] {
+            for output in &output_nodes[v as usize] {
                 // reduce input count
-                node_inputs_count[*output as usize] -= 1;
-                if node_inputs_count[*output as usize] == 0 {
+                node_input_nodes_count[*output as usize] -= 1;
+                if node_input_nodes_count[*output as usize] == 0 {
                     topo_sort.push(*output);
                 }
             }
@@ -164,7 +180,7 @@ impl NodeGraph {
             let context = Context {
                 time: time,
                 outputs: &outputs,
-                inputs: &self.node_inputs[*v as usize],
+                input_nodes: &self.node_input_nodes[*v as usize],
             };
 
             let sample = self.nodes[*v as usize].behaviour.gen_next_sample(context);
@@ -172,14 +188,12 @@ impl NodeGraph {
         }
 
         for v in topo_sort {
-            for input in &self.node_inputs[v as usize] {
-                let context = Context {
-                    time: time,
-                    outputs: &outputs,
-                    inputs: &self.node_inputs[v as usize],
-                };
-                self.nodes[v as usize].behaviour.process_outputs(context);
-            }
+            let context = Context {
+                time: time,
+                outputs: &outputs,
+                input_nodes: &self.node_input_nodes[v as usize],
+            };
+            self.nodes[v as usize].behaviour.process_outputs(context);
         }
 
         outputs[node as usize]
@@ -251,21 +265,58 @@ mod tests {
     }
 
     #[test]
-    fn can_run_a_delay_cycle() {
+    fn can_run_a_queue_of_delay_nodes() {
         let mut graph = NodeGraph::new();
-        let sine = graph.add_node(Box::new(SineOscillator { freq: 1.0 }));
+        let test = graph.add_node(Box::new(TestOscillator { phase: 1.0 }));
         let delay = graph.add_node(Box::new(Delay {
             delay_samples: 1,
             buffered_samples: Vec::new(),
         }));
-        let mix = graph.add_node(Box::new(Add{}));
-        graph.link(sine, mix);
-        graph.link(mix, delay);
-        graph.link(delay, mix);
-        graph.set_sample_rate(4);
-        graph.gen_next_sample(mix);
-        assert_eq!(graph.gen_next_sample(delay), 0.0);
-        assert_eq!(graph.gen_next_sample(delay), 1.0);
+        let delay1 = graph.add_node(Box::new(Delay {
+            delay_samples: 1,
+            buffered_samples: Vec::new(),
+        }));
+        let delay2 = graph.add_node(Box::new(Delay {
+            delay_samples: 1,
+            buffered_samples: Vec::new(),
+        }));
+        graph.link(test, delay);
+        graph.link(delay, delay1);
+        graph.link(delay1, delay2);
+        graph.set_sample_rate(1);
+        assert_eq!(graph.gen_next_sample(delay2), 0.0);
+        assert_eq!(graph.gen_next_sample(delay2), 0.0);
+        assert_eq!(graph.gen_next_sample(delay2), 0.0);
+        assert_eq!(graph.gen_next_sample(delay2), 1.0);
+        assert_eq!(graph.gen_next_sample(delay2), 0.0);
+        assert_eq!(graph.gen_next_sample(delay2), 1.0);
+    }
 
+    #[test]
+    fn can_run_a_queue_of_delay_nodes_constructed_out_of_order() {
+        let mut graph = NodeGraph::new();
+        let test = graph.add_node(Box::new(TestOscillator { phase: 1.0 }));
+        let delay2 = graph.add_node(Box::new(Delay {
+            delay_samples: 1,
+            buffered_samples: Vec::new(),
+        }));
+        let delay1 = graph.add_node(Box::new(Delay {
+            delay_samples: 1,
+            buffered_samples: Vec::new(),
+        }));
+        let delay = graph.add_node(Box::new(Delay {
+            delay_samples: 1,
+            buffered_samples: Vec::new(),
+        }));
+        graph.link(test, delay);
+        graph.link(delay, delay1);
+        graph.link(delay1, delay2);
+        graph.set_sample_rate(1);
+        assert_eq!(graph.gen_next_sample(delay2), 0.0);
+        assert_eq!(graph.gen_next_sample(delay2), 0.0);
+        assert_eq!(graph.gen_next_sample(delay2), 0.0);
+        assert_eq!(graph.gen_next_sample(delay2), 1.0);
+        assert_eq!(graph.gen_next_sample(delay2), 0.0);
+        assert_eq!(graph.gen_next_sample(delay2), 1.0);
     }
 }
