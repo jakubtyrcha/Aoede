@@ -1,11 +1,10 @@
 use std::borrow::Cow;
 use std::iter;
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::sync::mpsc::channel;
 use std::time::Instant;
 
-use audio::stream_setup_for;
+use audio_setup::stream_setup_for;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
 
@@ -15,18 +14,18 @@ use egui::Context;
 use egui::plot;
 use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
-use synthesis::{Add, NodeGraph, SineOscillator};
+use mt_ringbuffer::{MtRingbuffer, MtRingbufferReader};
 use wgpu::util::DeviceExt;
 use wgpu::{ImageCopyTexture, Origin3d};
 use winit::event::Event::*;
 use winit::event_loop::ControlFlow;
 
-use crate::synthesis::Delay;
 const INITIAL_WIDTH: u32 = 1920;
 const INITIAL_HEIGHT: u32 = 1080;
 
-mod audio;
-mod synthesis;
+mod audio_setup;
+mod audio_synthesis;
+mod mt_ringbuffer;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -63,36 +62,11 @@ impl AudioSampleGenerator {
     }
 }
 
-struct AudioSampleRingbuffer {
-    buffer: Vec<AtomicU32>,
-    next_sample_write: AtomicI32,
-}
-
-impl AudioSampleRingbuffer {
-    fn new(size: usize) -> AudioSampleRingbuffer {
-        let mut buffer = Vec::new();
-        buffer.resize_with(size, || AtomicU32::new(0));
-        AudioSampleRingbuffer {
-            buffer: buffer,
-            next_sample_write: AtomicI32::new(0),
-        }
-    }
-
-    fn write(&mut self, value: u32) {
-        let N = self.buffer.len();
-        let write_sample = self
-            .next_sample_write
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let write_index = write_sample as usize % N;
-        self.buffer[write_index].store(value, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
 struct AudioSampleProducer<'a> {
     stream_config: Option<cpal::StreamConfig>,
     config: AudioSampleGenerator,
     config_tx: std::sync::mpsc::Receiver<AudioSampleGenerator>,
-    write_buffer: &'a mut AudioSampleRingbuffer,
+    write_buffer: &'a mut MtRingbuffer,
     sample_index: i32,
 }
 
@@ -100,7 +74,7 @@ impl<'a> AudioSampleProducer<'a> {
     fn new(
         config: AudioSampleGenerator,
         config_tx: std::sync::mpsc::Receiver<AudioSampleGenerator>,
-        write_buffer: &'a mut AudioSampleRingbuffer,
+        write_buffer: &'a mut MtRingbuffer,
     ) -> AudioSampleProducer<'a> {
         AudioSampleProducer {
             stream_config: None,
@@ -116,48 +90,15 @@ impl<'a> AudioSampleProducer<'a> {
     }
 }
 
-impl<'a> audio::SampleProducer for AudioSampleProducer<'a> {
+impl<'a> audio_setup::SampleProducer for AudioSampleProducer<'a> {
     fn set_stream_config(&mut self, stream_config: cpal::StreamConfig) {
         self.stream_config = Some(stream_config);
     }
 }
 
-struct AudioSampleViewer<'a> {
-    buffer: &'a AudioSampleRingbuffer,
-    next_sample_read: i32,
-}
-
-impl<'a> AudioSampleViewer<'a> {
-    fn new(buffer: &'a AudioSampleRingbuffer) -> AudioSampleViewer<'a> {
-        AudioSampleViewer {
-            buffer,
-            next_sample_read: 0,
-        }
-    }
-
-    fn skip_n_samples(&mut self, jump: i32) {
-        self.next_sample_read += jump;
-    }
-
-    fn next(&mut self) -> Option<u32> {
-        let buffer_sentinel = self
-            .buffer
-            .next_sample_write
-            .load(std::sync::atomic::Ordering::SeqCst);
-        if self.next_sample_read < buffer_sentinel {
-            let buffer_index = self.next_sample_read % self.buffer.buffer.len() as i32;
-            let value =
-                self.buffer.buffer[buffer_index as usize].load(std::sync::atomic::Ordering::SeqCst);
-            self.next_sample_read += 1;
-            return Some(value);
-        }
-        None
-    }
-}
-
 //
 
-static mut AUDIO_RINGBUFFER: Option<AudioSampleRingbuffer> = None;
+static mut AUDIO_RINGBUFFER: Option<MtRingbuffer> = None;
 
 struct MyApp {
     stream: cpal::Stream,
@@ -179,7 +120,9 @@ impl Default for MyApp {
         let (rx, tx) = channel();
 
         unsafe {
-            AUDIO_RINGBUFFER = Some(AudioSampleRingbuffer::new(480 * 100));
+            // stores 10 seconds of audio
+            // TODO: size based on audio device
+            AUDIO_RINGBUFFER = Some(MtRingbuffer::new(48000 * 100));
         }
         let result = MyApp {
             stream: stream_setup_for(
@@ -331,7 +274,7 @@ fn main() {
 
     let mut app: MyApp = MyApp::default();
 
-    let mut reader = AudioSampleViewer::new(unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
+    let mut reader = MtRingbufferReader::new(unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
 
     //
 
@@ -469,16 +412,6 @@ fn main() {
             .cloned(),
     );
     let mut next_audio_sample_index: i64 = 0;
-
-    // let sample_rate = 480000 as f32;
-    // let sample_clock = 0f32;
-    // let nchannels = 1 as usize;
-    // let mut request = SampleRequestOptions {
-    //     sample_rate,
-    //     sample_clock,
-    //     nchannels,
-    //     index: 0
-    // };
 
     // todo: this should match audio start time, not start of the loop
     let start_time = Instant::now();
