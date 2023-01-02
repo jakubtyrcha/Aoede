@@ -29,6 +29,7 @@ impl MtRingbuffer {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct MtRingbufferReader<'a> {
     buffer: &'a MtRingbuffer,
     next_sample_read: i32,

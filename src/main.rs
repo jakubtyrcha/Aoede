@@ -6,13 +6,18 @@ use std::time::Instant;
 
 use audio_generator::AudioGenerator;
 use audio_setup::stream_setup_for;
+use audio_synthesis::Add;
+use audio_synthesis::Delay;
+use audio_synthesis::Gain;
+use audio_synthesis::NodeGraph;
+use audio_synthesis::SineOscillator;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
 
 use ::egui::FontDefinitions;
 use chrono::Timelike;
-use egui::Context;
 use egui::plot;
+use egui::Context;
 use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
 use mt_ringbuffer::{MtRingbuffer, MtRingbufferReader};
@@ -24,10 +29,10 @@ use winit::event_loop::ControlFlow;
 const INITIAL_WIDTH: u32 = 1920;
 const INITIAL_HEIGHT: u32 = 1080;
 
+mod audio_generator;
 mod audio_setup;
 mod audio_synthesis;
 mod mt_ringbuffer;
-mod audio_generator;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -44,16 +49,14 @@ struct Uniforms {
 //
 
 #[derive(Copy, Clone)]
-struct UserInputs {
-
-}
+struct UserInputs {}
 
 struct AudioSampleProducer<'a> {
     audio_generator: AudioGenerator,
     user_input_tx: std::sync::mpsc::Receiver<UserInputs>,
     write_buffer: &'a mut MtRingbuffer,
     sample_index: i32,
-    user_input: UserInputs
+    user_input: UserInputs,
 }
 
 impl<'a> AudioSampleProducer<'a> {
@@ -67,7 +70,7 @@ impl<'a> AudioSampleProducer<'a> {
             user_input_tx,
             write_buffer,
             sample_index: 0,
-            user_input: UserInputs {  }
+            user_input: UserInputs {},
         }
     }
 
@@ -95,29 +98,30 @@ impl Default for MyApp {
             // stores 10 seconds of audio
             AUDIO_RINGBUFFER = Some(MtRingbuffer::new((config.sample_rate().0 * 100) as usize));
         }
-        let generator = AudioGenerator::new(&config.clone().into());
-        let producer = AudioSampleProducer::new(generator, tx, unsafe {
+        let generator = AudioGenerator::new(MtRingbufferReader::new(unsafe {
             AUDIO_RINGBUFFER.as_mut().unwrap()
-        });
+        }));
+        let producer =
+            AudioSampleProducer::new(generator, tx, unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
+        let mut reader = MtRingbufferReader::new(unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
         let result = MyApp {
             stream: stream_setup_for(
-                &device, &config,
+                &device,
+                &config,
                 move |o: &mut AudioSampleProducer| {
                     if let Ok(config) = o.user_input_tx.try_recv() {
                         o.user_input = config;
                     }
 
-                    let sample = o
-                        .audio_generator
-                        .get_next_sample();
-                    o.sample_index += 1;
-                    o.write_sample(sample.to_bits());
-                    sample
+                    // let sample = o.audio_generator.get_next_sample();
+                    // o.sample_index += 1;
+                    // o.write_sample(sample.to_bits());
+                    f32::from_bits(reader.next().unwrap_or(0))
                 },
                 producer,
             )
             .unwrap(),
-            state: UserInputs {  },
+            state: UserInputs {},
             rx,
         };
         result.stream.play().unwrap();
@@ -130,20 +134,24 @@ impl MyApp {
         egui::Window::new("Demo").show(ctx, |ui| {
             ui.heading("My egui Application");
             let config = &mut self.state;
-            
+
             let data_clone = audio_data.clone();
 
-            let points = plot::PlotPoints::from_explicit_callback(move |x: f64| {
-                let index = if x >= 0.0 { (x * 480.0) as usize } else { 0 };
-                if index < data_clone.len() {
-                    return data_clone[index] as f64
-                }
-                0.0
-            }, std::f64::NEG_INFINITY..std::f64::INFINITY, 1000);
-            
-            plot::Plot::new("Audio plot").data_aspect(1.0).show(ui, |plot_ui| {
-                plot_ui.line(plot::Line::new(points))
-            });
+            let points = plot::PlotPoints::from_explicit_callback(
+                move |x: f64| {
+                    let index = if x >= 0.0 { (x * 480.0) as usize } else { 0 };
+                    if index < data_clone.len() {
+                        return data_clone[index] as f64;
+                    }
+                    0.0
+                },
+                std::f64::NEG_INFINITY..std::f64::INFINITY,
+                1000,
+            );
+
+            plot::Plot::new("Audio plot")
+                .data_aspect(1.0)
+                .show(ui, |plot_ui| plot_ui.line(plot::Line::new(points)));
         });
     }
 }
@@ -223,10 +231,29 @@ fn main() {
     let mut egui_rpass = RenderPass::new(&device, surface_format, 1);
 
     let mut app: MyApp = MyApp::default();
-
     let mut reader = MtRingbufferReader::new(unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
 
-    //
+    let mut graph = NodeGraph::new();
+    let sine = graph.add_node(Box::new(SineOscillator { freq: 500.0 }));
+    //let sine2 = graph.add_node(Box::new(SineOscillator { freq: 250.0 }));
+    let delay = graph.add_node(Box::new(Delay {
+        delay_samples: 1,
+        buffered_samples: Vec::new(),
+    }));
+    let gain = graph.add_node(Box::new(Gain { volume: 0.5 }));
+    let mix = graph.add_node(Box::new(Add {}));
+    graph.link(sine, delay);
+    graph.link(delay, mix);
+    //graph.link(gain, mix);
+    //graph.link(sine, mix);
+
+    graph.set_sample_rate(48000);
+
+    // gen 10 sec of music
+    for _ in 0..480000 {
+        let writer = unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() };
+        writer.write(graph.gen_next_sample(mix).to_bits());
+    }
 
     // Load the shaders from disk
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
