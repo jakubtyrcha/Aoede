@@ -4,6 +4,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc::channel;
 use std::time::Instant;
 
+use audio_generator::AudioGenerator;
 use audio_setup::stream_setup_for;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
@@ -26,6 +27,7 @@ const INITIAL_HEIGHT: u32 = 1080;
 mod audio_setup;
 mod audio_synthesis;
 mod mt_ringbuffer;
+mod audio_generator;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -42,57 +44,35 @@ struct Uniforms {
 //
 
 #[derive(Copy, Clone)]
-struct AudioSampleGenerator {
-    // hz
-    sin0_freq: f32,
-    sin0_phase: f32,
-    sin0_vol: f32,
-    sin1_freq: f32,
-    sin1_phase: f32,
-    sin1_vol: f32,
-}
+struct UserInputs {
 
-impl AudioSampleGenerator {
-    fn generate(&self, stream_config: &cpal::StreamConfig, sample_index: i32) -> f32 {
-        let t_sec = sample_index as f32 / stream_config.sample_rate.0 as f32;
-        let wave0 = (t_sec * self.sin0_freq * 2.0 * std::f32::consts::PI + self.sin0_phase).sin();
-        let wave1 = (t_sec * self.sin1_freq * 2.0 * std::f32::consts::PI + self.sin1_phase).sin();
-        let sum = wave0 * self.sin0_vol + wave1 * self.sin1_vol;
-        sum
-    }
 }
 
 struct AudioSampleProducer<'a> {
-    stream_config: Option<cpal::StreamConfig>,
-    config: AudioSampleGenerator,
-    config_tx: std::sync::mpsc::Receiver<AudioSampleGenerator>,
+    audio_generator: AudioGenerator,
+    user_input_tx: std::sync::mpsc::Receiver<UserInputs>,
     write_buffer: &'a mut MtRingbuffer,
     sample_index: i32,
+    user_input: UserInputs
 }
 
 impl<'a> AudioSampleProducer<'a> {
     fn new(
-        config: AudioSampleGenerator,
-        config_tx: std::sync::mpsc::Receiver<AudioSampleGenerator>,
+        audio_generator: AudioGenerator,
+        user_input_tx: std::sync::mpsc::Receiver<UserInputs>,
         write_buffer: &'a mut MtRingbuffer,
     ) -> AudioSampleProducer<'a> {
         AudioSampleProducer {
-            stream_config: None,
-            config,
-            config_tx,
+            audio_generator,
+            user_input_tx,
             write_buffer,
             sample_index: 0,
+            user_input: UserInputs {  }
         }
     }
 
     fn write_sample(&mut self, value: u32) {
         self.write_buffer.write(value);
-    }
-}
-
-impl<'a> audio_setup::SampleProducer for AudioSampleProducer<'a> {
-    fn set_stream_config(&mut self, stream_config: cpal::StreamConfig) {
-        self.stream_config = Some(stream_config);
     }
 }
 
@@ -102,48 +82,42 @@ static mut AUDIO_RINGBUFFER: Option<MtRingbuffer> = None;
 
 struct MyApp {
     stream: cpal::Stream,
-    state: AudioSampleGenerator,
-    rx: std::sync::mpsc::Sender<AudioSampleGenerator>,
+    state: UserInputs,
+    rx: std::sync::mpsc::Sender<UserInputs>,
 }
 
 impl Default for MyApp {
     fn default() -> Self {
-        let samplegen = AudioSampleGenerator {
-            sin0_freq: 1000.0,
-            sin0_phase: 0.0,
-            sin0_vol: 0.5,
-            sin1_freq: 500.0,
-            sin1_phase: 0.0,
-            sin1_vol: 0.0,
-        };
-
+        let (_host, device, config) = audio_setup::host_device_setup().unwrap();
         let (rx, tx) = channel();
 
         unsafe {
             // stores 10 seconds of audio
-            // TODO: size based on audio device
-            AUDIO_RINGBUFFER = Some(MtRingbuffer::new(48000 * 100));
+            AUDIO_RINGBUFFER = Some(MtRingbuffer::new((config.sample_rate().0 * 100) as usize));
         }
+        let generator = AudioGenerator::new(&config.clone().into());
+        let producer = AudioSampleProducer::new(generator, tx, unsafe {
+            AUDIO_RINGBUFFER.as_mut().unwrap()
+        });
         let result = MyApp {
             stream: stream_setup_for(
+                &device, &config,
                 move |o: &mut AudioSampleProducer| {
-                    if let Ok(config) = o.config_tx.try_recv() {
-                        o.config = config;
+                    if let Ok(config) = o.user_input_tx.try_recv() {
+                        o.user_input = config;
                     }
 
                     let sample = o
-                        .config
-                        .generate(o.stream_config.as_ref().unwrap(), o.sample_index);
+                        .audio_generator
+                        .get_next_sample();
                     o.sample_index += 1;
                     o.write_sample(sample.to_bits());
                     sample
                 },
-                AudioSampleProducer::new(samplegen, tx, unsafe {
-                    AUDIO_RINGBUFFER.as_mut().unwrap()
-                }),
+                producer,
             )
             .unwrap(),
-            state: samplegen,
+            state: UserInputs {  },
             rx,
         };
         result.stream.play().unwrap();
@@ -156,31 +130,7 @@ impl MyApp {
         egui::Window::new("Demo").show(ctx, |ui| {
             ui.heading("My egui Application");
             let config = &mut self.state;
-            let mut changed = false;
-            changed |= ui
-                .add(egui::Slider::new(&mut config.sin0_freq, 10.0..=1000.0).text("Frequency 0"))
-                .changed();
-            changed |= ui
-                .add(egui::Slider::new(&mut config.sin0_phase, 0.0..=3.14159).text("Phase 0"))
-                .changed();
-            changed |= ui
-                .add(egui::Slider::new(&mut config.sin0_vol, 0.0..=2.0).text("Volume 0"))
-                .changed();
-
-            changed |= ui
-                .add(egui::Slider::new(&mut config.sin1_freq, 10.0..=1000.0).text("Frequency 1"))
-                .changed();
-            changed |= ui
-                .add(egui::Slider::new(&mut config.sin1_phase, 0.0..=3.14159).text("Phase 1"))
-                .changed();
-            changed |= ui
-                .add(egui::Slider::new(&mut config.sin1_vol, 0.0..=2.0).text("Volume 1"))
-                .changed();
-
-            if changed {
-                self.rx.send(self.state).unwrap();
-            }
-
+            
             let data_clone = audio_data.clone();
 
             let points = plot::PlotPoints::from_explicit_callback(move |x: f64| {
