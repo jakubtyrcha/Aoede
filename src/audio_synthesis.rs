@@ -358,4 +358,48 @@ mod tests {
         assert_eq!(graph.gen_next_sample(mix), 1.0);
         assert_eq!(graph.gen_next_sample(mix), 0.0);
     }
+
+    #[test]
+    fn can_run_a_delay_gain_graph() {
+        let mut graph = NodeGraph::new();
+        let test = graph.add_node(Box::new(TestOscillator { phase: 1.0 }));
+        let delay = graph.add_node(Box::new(Delay {
+            delay_samples: 4,
+            buffered_samples: Vec::new(),
+        }));
+        let gain = graph.add_node(Box::new(Gain { volume: 0.5 }));
+        let mix = graph.add_node(Box::new(Add {}));
+        graph.link(test, delay);
+        graph.link(delay, gain);
+        graph.link(gain, mix);
+        graph.set_sample_rate(1);
+        assert_eq!(graph.gen_next_sample(mix), 0.0);
+        assert_eq!(graph.gen_next_sample(mix), 0.0);
+        assert_eq!(graph.gen_next_sample(mix), 0.0);
+        assert_eq!(graph.gen_next_sample(mix), 0.0);
+        assert_eq!(graph.gen_next_sample(mix), 0.5);
+        assert_eq!(graph.gen_next_sample(mix), 0.0);
+    }
+
+    #[test]
+    fn can_run_a_delay_gain_loop() {
+        let mut graph = NodeGraph::new();
+        let test = graph.add_node(Box::new(TestOscillator { phase: 1.0 }));
+        let delay = graph.add_node(Box::new(Delay {
+            delay_samples: 1,
+            buffered_samples: Vec::new(),
+        }));
+        let gain = graph.add_node(Box::new(Gain { volume: 0.5 }));
+        let mix = graph.add_node(Box::new(Add {}));
+        graph.link(test, mix);
+        graph.link(mix, delay);
+        graph.link(delay, gain);
+        graph.link(gain, mix);
+        graph.set_sample_rate(1);
+        assert_eq!(graph.gen_next_sample(mix), 1.0);
+        assert_eq!(graph.gen_next_sample(mix), 0.5);
+        assert_eq!(graph.gen_next_sample(mix), 1.25);
+        assert_eq!(graph.gen_next_sample(mix), 0.625);
+        assert_eq!(graph.gen_next_sample(mix), 1.3125);
+    }
 }
