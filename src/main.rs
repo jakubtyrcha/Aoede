@@ -1,10 +1,9 @@
 use std::borrow::Cow;
 use std::iter;
 use std::num::NonZeroU32;
-use std::sync::mpsc::channel;
+use std::sync::Arc;
 use std::time::Instant;
 
-use audio_generator::AudioGenerator;
 use audio_setup::stream_setup_for;
 use audio_synthesis::Add;
 use audio_synthesis::Delay;
@@ -20,7 +19,6 @@ use egui::plot;
 use egui::Context;
 use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
-use mt_ringbuffer::{MtRingbuffer, MtRingbufferReader};
 use wgpu::util::DeviceExt;
 use wgpu::{ImageCopyTexture, Origin3d};
 use winit::event::Event::*;
@@ -29,10 +27,8 @@ use winit::event_loop::ControlFlow;
 const INITIAL_WIDTH: u32 = 1920;
 const INITIAL_HEIGHT: u32 = 1080;
 
-mod audio_generator;
 mod audio_setup;
 mod audio_synthesis;
-mod mt_ringbuffer;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -48,82 +44,80 @@ struct Uniforms {
 
 //
 
-#[derive(Copy, Clone)]
-struct UserInputs {}
-
-struct AudioSampleProducer<'a> {
-    audio_generator: AudioGenerator,
-    user_input_tx: std::sync::mpsc::Receiver<UserInputs>,
-    write_buffer: &'a mut MtRingbuffer,
-    sample_index: i32,
-    user_input: UserInputs,
-}
-
-impl<'a> AudioSampleProducer<'a> {
-    fn new(
-        audio_generator: AudioGenerator,
-        user_input_tx: std::sync::mpsc::Receiver<UserInputs>,
-        write_buffer: &'a mut MtRingbuffer,
-    ) -> AudioSampleProducer<'a> {
-        AudioSampleProducer {
-            audio_generator,
-            user_input_tx,
-            write_buffer,
-            sample_index: 0,
-            user_input: UserInputs {},
-        }
-    }
-
-    fn write_sample(&mut self, value: u32) {
-        self.write_buffer.write(value);
-    }
-}
-
-//
-
-static mut AUDIO_RINGBUFFER: Option<MtRingbuffer> = None;
-
 struct MyApp {
     stream: cpal::Stream,
-    state: UserInputs,
-    rx: std::sync::mpsc::Sender<UserInputs>,
+    queue: Arc<crossbeam_queue::ArrayQueue<f32>>,
+    samples: Vec<f32>,
+    write_index: usize,
+    graph: NodeGraph,
+    sink_node: i32
+}
+
+struct AudioSampleReader {
+    queue: Arc<crossbeam_queue::ArrayQueue<f32>>,
+}
+
+impl MyApp {
+    fn fill_samples(&mut self, index: usize) {
+        
+
+        let buffer = 48000; // 1 sec ahead
+        while self.write_index < index + buffer {
+            let sample = self.graph.gen_next_sample(self.sink_node);
+
+            self.samples[self.write_index] = sample;
+            self.queue.push(sample).unwrap();
+
+            self.write_index += 1;
+        }
+    }
 }
 
 impl Default for MyApp {
     fn default() -> Self {
         let (_host, device, config) = audio_setup::host_device_setup().unwrap();
-        let (rx, tx) = channel();
 
-        unsafe {
-            // stores 10 seconds of audio
-            AUDIO_RINGBUFFER = Some(MtRingbuffer::new((config.sample_rate().0 * 100) as usize));
-        }
-        let generator = AudioGenerator::new(MtRingbufferReader::new(unsafe {
-            AUDIO_RINGBUFFER.as_mut().unwrap()
+        let mut graph = NodeGraph::new();
+        let sine = graph.add_node(Box::new(SineOscillator { freq: 250.0 }));
+        let delay = graph.add_node(Box::new(Delay {
+            delay_samples: 48000 / 10,
+            buffered_samples: Vec::new(),
         }));
-        let producer =
-            AudioSampleProducer::new(generator, tx, unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
-        let mut reader = MtRingbufferReader::new(unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
-        let result = MyApp {
+        let gain = graph.add_node(Box::new(Gain { volume: 0.25 }));
+        let mix = graph.add_node(Box::new(Add {}));
+        graph.link(sine, mix);
+        graph.link(mix, delay);
+        graph.link(delay, gain);
+        graph.link(gain, mix);
+
+        graph.set_sample_rate(config.sample_rate().0 as i32);
+
+        let queue_size = config.sample_rate().0 * 10;
+        let q = Arc::new(crossbeam_queue::ArrayQueue::new(queue_size as usize));
+
+        let samples = Vec::from_iter(
+            [0.0 as f32]
+                .iter()
+                .cycle()
+                .take(queue_size as usize)
+                .cloned(),
+        );
+
+        let mut result = MyApp {
             stream: stream_setup_for(
                 &device,
                 &config,
-                move |o: &mut AudioSampleProducer| {
-                    if let Ok(config) = o.user_input_tx.try_recv() {
-                        o.user_input = config;
-                    }
-
-                    // let sample = o.audio_generator.get_next_sample();
-                    // o.sample_index += 1;
-                    // o.write_sample(sample.to_bits());
-                    f32::from_bits(reader.next().unwrap_or(0))
-                },
-                producer,
+                move |o: &mut AudioSampleReader| o.queue.pop().unwrap_or(0.0),
+                AudioSampleReader { queue: q.clone() },
             )
             .unwrap(),
-            state: UserInputs {},
-            rx,
+            queue: q,
+            samples,
+            write_index: 0,
+            graph,
+            sink_node: mix
         };
+        result.fill_samples(0);
         result.stream.play().unwrap();
         result
     }
@@ -133,7 +127,6 @@ impl MyApp {
     pub fn ui(&mut self, ctx: &Context, audio_data: &Vec<f32>) {
         egui::Window::new("Demo").show(ctx, |ui| {
             ui.heading("My egui Application");
-            let config = &mut self.state;
 
             let data_clone = audio_data.clone();
 
@@ -231,29 +224,7 @@ fn main() {
     let mut egui_rpass = RenderPass::new(&device, surface_format, 1);
 
     let mut app: MyApp = MyApp::default();
-    let mut reader = MtRingbufferReader::new(unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
-
-    let mut graph = NodeGraph::new();
-    let sine = graph.add_node(Box::new(SineOscillator { freq: 500.0 }));
-    //let sine2 = graph.add_node(Box::new(SineOscillator { freq: 250.0 }));
-    let delay = graph.add_node(Box::new(Delay {
-        delay_samples: 1,
-        buffered_samples: Vec::new(),
-    }));
-    let gain = graph.add_node(Box::new(Gain { volume: 0.5 }));
-    let mix = graph.add_node(Box::new(Add {}));
-    graph.link(sine, delay);
-    graph.link(delay, mix);
-    //graph.link(gain, mix);
-    //graph.link(sine, mix);
-
-    graph.set_sample_rate(48000);
-
-    // gen 10 sec of music
-    for _ in 0..480000 {
-        let writer = unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() };
-        writer.write(graph.gen_next_sample(mix).to_bits());
-    }
+    //let mut reader = MtRingbufferReader::new(unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
 
     // Load the shaders from disk
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -404,14 +375,19 @@ fn main() {
                 // let current_texture_sample_index =
                 //     start_time.elapsed().as_micros() as i64 * samples_per_sec as i64 / 1000000;
 
-                let jump = 48000 / 480;
-                while let Some(sample) = reader.next() {
-                    audio_data
-                        [(next_audio_sample_index % audio_samples_tex_buffer_size) as usize] =
-                        f32::from_bits(sample as u32);
-                    next_audio_sample_index += 1;
-                    reader.skip_n_samples(jump - 1);
-                }
+                // let jump = 48000 / 480;
+                // while let Some(sample) = reader.next() {
+                //     audio_data
+                //         [(next_audio_sample_index % audio_samples_tex_buffer_size) as usize] =
+                //         f32::from_bits(sample as u32);
+                //     next_audio_sample_index += 1;
+                //     reader.skip_n_samples(jump - 1);
+                // }
+
+                let time_pointer = start_time.elapsed().as_millis() as usize * 48000 / 1000;
+
+                app.fill_samples(time_pointer);
+
                 // for i in next_sample_index..current_sample_index {
                 //     request.tick();
                 //     audio_data[(i % audio_samples_buffer_size) as usize] = request.tone(500.0);
@@ -440,7 +416,7 @@ fn main() {
 
                 // Draw the demo application.
                 //demo_app.ui(&platform.context());
-                app.ui(&platform.context(), &audio_data);
+                app.ui(&platform.context(), &app.samples.clone());
 
                 // End the UI frame. We could now handle the output and draw the UI with the backend.
                 let full_output = platform.end_frame(Some(&window));
