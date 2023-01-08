@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 pub struct Context<'a> {
     time: f32,
@@ -10,6 +12,12 @@ pub trait NodeBehaviour {
     fn gen_next_sample(&self, context: Context) -> f32;
     fn process_outputs(&mut self, _: Context) {}
     fn is_delay(&self) -> bool { false }
+}
+
+impl std::fmt::Debug for dyn NodeBehaviour {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "NodeBehaviour")
+    }
 }
 
 pub struct SineOscillator {
@@ -121,17 +129,20 @@ impl NodeBehaviour for Delay {
     }
 }
 
+#[derive(Debug, Clone)]
 struct Node {
     id: i32,
-    behaviour: Box<dyn NodeBehaviour>,
+    behaviour: Rc<RefCell<dyn NodeBehaviour>>,
 }
 
+#[derive(Debug, Clone)]
 pub struct NodeGraph {
     next_id: i32,
     nodes: Vec<Node>,
     node_input_nodes: Vec<Vec<i32>>,
     sample_rate: i32,
     current_sample: i32,
+    sink_node: Option<i32>
 }
 
 impl NodeGraph {
@@ -142,10 +153,11 @@ impl NodeGraph {
             node_input_nodes: Vec::new(),
             sample_rate: 0,
             current_sample: -1,
+            sink_node: None
         }
     }
 
-    pub fn add_node(&mut self, behaviour: Box<dyn NodeBehaviour>) -> i32 {
+    pub fn add_node(&mut self, behaviour: Rc<RefCell<dyn NodeBehaviour>>) -> i32 {
         self.nodes.push(Node {
             id: self.next_id,
             behaviour,
@@ -156,6 +168,14 @@ impl NodeGraph {
         id
     }
 
+    pub fn add_sine_node(&mut self) -> i32 {
+        self.add_node(Rc::new(RefCell::new(SineOscillator{ freq: 1000.0 })))
+    }
+
+    pub fn set_sink(&mut self, sink: i32) {
+        self.sink_node = Some(sink);
+    }
+
     pub fn link(&mut self, node_from: i32, node_to: i32) {
         self.node_input_nodes[node_to as usize].push(node_from);
     }
@@ -164,7 +184,7 @@ impl NodeGraph {
         self.sample_rate = num;
     }
 
-    pub fn gen_next_sample(&mut self, node: i32) -> f32 {
+    pub fn gen_next_sample(&mut self) -> f32 {
         let mut topo_sort = Vec::<i32>::new();
         let mut next_topo_index = 0;
         // we build per node list of output indices
@@ -177,7 +197,7 @@ impl NodeGraph {
         for node in &self.nodes {
             for input_node_index in &self.node_input_nodes[node.id as usize] {
                 //
-                if !self.nodes[*input_node_index as usize].behaviour.is_delay() {
+                if !self.nodes[*input_node_index as usize].behaviour.borrow().is_delay() {
                     node_outputs[*input_node_index as usize].push(node.id);
                     node_input_count[node.id as usize] += 1;
                 }
@@ -223,7 +243,7 @@ impl NodeGraph {
                 input_nodes: &self.node_input_nodes[*v as usize],
             };
 
-            let sample = self.nodes[*v as usize].behaviour.gen_next_sample(context);
+            let sample = self.nodes[*v as usize].behaviour.borrow().gen_next_sample(context);
             outputs[*v as usize] = sample;
         }
 
@@ -235,7 +255,7 @@ impl NodeGraph {
             };
 
             if !fantom_delay_nodes.contains(v) {
-                let sample = self.nodes[*v as usize].behaviour.gen_next_sample(context);
+                let sample = self.nodes[*v as usize].behaviour.borrow().gen_next_sample(context);
                 outputs[*v as usize] = sample;
             }
         }
@@ -246,10 +266,10 @@ impl NodeGraph {
                 outputs: &outputs,
                 input_nodes: &self.node_input_nodes[v as usize],
             };
-            self.nodes[v as usize].behaviour.process_outputs(context);
+            self.nodes[v as usize].behaviour.borrow_mut().process_outputs(context);
         }
 
-        outputs[node as usize]
+        outputs[self.sink_node.unwrap() as usize]
     }
 }
 

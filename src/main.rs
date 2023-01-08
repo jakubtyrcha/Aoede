@@ -1,16 +1,18 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::iter;
 use std::num::NonZeroU32;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
 use audio_setup::stream_setup_for;
-use audio_synthesis::ADSR;
 use audio_synthesis::Add;
 use audio_synthesis::Delay;
 use audio_synthesis::Gain;
 use audio_synthesis::NodeGraph;
 use audio_synthesis::SineOscillator;
+use audio_synthesis::ADSR;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
 
@@ -31,6 +33,7 @@ const INITIAL_HEIGHT: u32 = 1080;
 mod audio_setup;
 mod audio_synthesis;
 
+use rhai::{Engine, EvalAltResult};
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
@@ -51,7 +54,6 @@ struct MyApp {
     samples: Vec<f32>,
     write_index: usize,
     graph: NodeGraph,
-    sink_node: i32
 }
 
 struct AudioSampleReader {
@@ -62,10 +64,10 @@ const AUDIO_BUFFER_SEC: u32 = 10;
 const SAMPLES_PRECOMPUTE_BUFFER_SEC: usize = 1;
 
 impl MyApp {
-    fn precompute_samples(&mut self, index: usize) {      
+    fn precompute_samples(&mut self, index: usize) {
         let buffer = SAMPLES_PRECOMPUTE_BUFFER_SEC * 48000; // 1 sec ahead
         while self.write_index < index + buffer {
-            let sample = self.graph.gen_next_sample(self.sink_node);
+            let sample = self.graph.gen_next_sample();
 
             let samples_num = self.samples.len();
             self.samples[self.write_index % samples_num] = sample;
@@ -80,20 +82,43 @@ impl Default for MyApp {
     fn default() -> Self {
         let (_host, device, config) = audio_setup::host_device_setup().unwrap();
 
-        let mut graph = NodeGraph::new();
-        let sine = graph.add_node(Box::new(SineOscillator { freq: 250.0 }));
-        let env = graph.add_node(Box::new(ADSR{ attack: 0.1, decay: 0.1, sustain: 0.2, release: 0.3 }));
-        let delay = graph.add_node(Box::new(Delay {
-            delay_samples: 48000 / 10,
-            buffered_samples: Vec::new(),
-        }));
-        let gain = graph.add_node(Box::new(Gain { volume: 0.25 }));
-        let mix = graph.add_node(Box::new(Add {}));
-        graph.link(sine, env);
-        graph.link(env, mix);
-        graph.link(mix, delay);
-        graph.link(delay, gain);
-        graph.link(gain, mix);
+        let mut engine = Engine::new();
+        engine
+            .register_type_with_name::<NodeGraph>("AudioGraph")
+            .register_fn("new_graph", NodeGraph::new)
+            .register_fn("add_sine", NodeGraph::add_sine_node)
+            .register_fn("set_sink", NodeGraph::set_sink);
+
+        let mut graph = engine
+            .eval::<NodeGraph>(
+                "
+                let g = new_graph();
+                let o = g.add_sine();
+                g.set_sink(o);
+                g
+                ",
+            )
+            .unwrap();
+
+        // let mut graph = NodeGraph::new();
+        // let sine = graph.add_node(Rc::new(RefCell::new(SineOscillator { freq: 250.0 })));
+        // let env = graph.add_node(Rc::new(RefCell::new(ADSR {
+        //     attack: 0.1,
+        //     decay: 0.1,
+        //     sustain: 0.2,
+        //     release: 0.3,
+        // })));
+        // let delay = graph.add_node(Rc::new(RefCell::new(Delay {
+        //     delay_samples: 48000 / 10,
+        //     buffered_samples: Vec::new(),
+        // })));
+        // let gain = graph.add_node(Rc::new(RefCell::new(Gain { volume: 0.25 })));
+        // let mix = graph.add_node(Rc::new(RefCell::new(Add {})));
+        // graph.link(sine, env);
+        // graph.link(env, mix);
+        // graph.link(mix, delay);
+        // graph.link(delay, gain);
+        // graph.link(gain, mix);
 
         graph.set_sample_rate(config.sample_rate().0 as i32);
 
@@ -120,7 +145,6 @@ impl Default for MyApp {
             samples,
             write_index: 0,
             graph,
-            sink_node: mix
         };
         result.precompute_samples(0);
         result.stream.play().unwrap();
@@ -136,10 +160,14 @@ impl MyApp {
             let data_clone = self.samples.clone();
 
             let sample_rate = 48000;
-            
+
             let points = plot::PlotPoints::from_explicit_callback(
                 move |x: f64| {
-                    let index = if x >= 0.0 { (x * sample_rate as f64) as usize } else { 0 };
+                    let index = if x >= 0.0 {
+                        (x * sample_rate as f64) as usize
+                    } else {
+                        0
+                    };
                     if index < data_clone.len() {
                         return data_clone[index] as f64;
                     }
