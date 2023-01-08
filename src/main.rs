@@ -58,15 +58,17 @@ struct AudioSampleReader {
     queue: Arc<crossbeam_queue::ArrayQueue<f32>>,
 }
 
-impl MyApp {
-    fn fill_samples(&mut self, index: usize) {
-        
+const AUDIO_BUFFER_SEC: u32 = 10;
+const SAMPLES_PRECOMPUTE_BUFFER_SEC: usize = 1;
 
-        let buffer = 48000; // 1 sec ahead
+impl MyApp {
+    fn precompute_samples(&mut self, index: usize) {      
+        let buffer = SAMPLES_PRECOMPUTE_BUFFER_SEC * 48000; // 1 sec ahead
         while self.write_index < index + buffer {
             let sample = self.graph.gen_next_sample(self.sink_node);
 
-            self.samples[self.write_index] = sample;
+            let samples_num = self.samples.len();
+            self.samples[self.write_index % samples_num] = sample;
             self.queue.push(sample).unwrap();
 
             self.write_index += 1;
@@ -95,7 +97,7 @@ impl Default for MyApp {
 
         graph.set_sample_rate(config.sample_rate().0 as i32);
 
-        let queue_size = config.sample_rate().0 * 10;
+        let queue_size = config.sample_rate().0 * AUDIO_BUFFER_SEC;
         let q = Arc::new(crossbeam_queue::ArrayQueue::new(queue_size as usize));
 
         let samples = Vec::from_iter(
@@ -120,22 +122,24 @@ impl Default for MyApp {
             graph,
             sink_node: mix
         };
-        result.fill_samples(0);
+        result.precompute_samples(0);
         result.stream.play().unwrap();
         result
     }
 }
 
 impl MyApp {
-    pub fn ui(&mut self, ctx: &Context, audio_data: &Vec<f32>) {
+    pub fn ui(&mut self, ctx: &Context) {
         egui::Window::new("Demo").show(ctx, |ui| {
             ui.heading("My egui Application");
 
-            let data_clone = audio_data.clone();
+            let data_clone = self.samples.clone();
 
+            let sample_rate = 48000;
+            
             let points = plot::PlotPoints::from_explicit_callback(
                 move |x: f64| {
-                    let index = if x >= 0.0 { (x * 480.0) as usize } else { 0 };
+                    let index = if x >= 0.0 { (x * sample_rate as f64) as usize } else { 0 };
                     if index < data_clone.len() {
                         return data_clone[index] as f64;
                     }
@@ -355,14 +359,13 @@ fn main() {
     });
 
     let audio_samples_tex_buffer_size = (audio_texture_width * audio_texture_height) as i64;
-    let mut audio_data = Vec::from_iter(
+    let audio_data = Vec::from_iter(
         [0.0 as f32]
             .iter()
             .cycle()
             .take(audio_samples_tex_buffer_size as usize)
             .cloned(),
     );
-    let mut next_audio_sample_index: i64 = 0;
 
     // todo: this should match audio start time, not start of the loop
     let start_time = Instant::now();
@@ -373,29 +376,8 @@ fn main() {
         match event {
             RedrawRequested(..) => {
                 platform.update_time(start_time.elapsed().as_secs_f64());
-
-                let samples_per_sec = audio_texture_width;
-                // let current_texture_sample_index =
-                //     start_time.elapsed().as_micros() as i64 * samples_per_sec as i64 / 1000000;
-
-                // let jump = 48000 / 480;
-                // while let Some(sample) = reader.next() {
-                //     audio_data
-                //         [(next_audio_sample_index % audio_samples_tex_buffer_size) as usize] =
-                //         f32::from_bits(sample as u32);
-                //     next_audio_sample_index += 1;
-                //     reader.skip_n_samples(jump - 1);
-                // }
-
                 let time_pointer = start_time.elapsed().as_millis() as usize * 48000 / 1000;
-
-                app.fill_samples(time_pointer);
-
-                // for i in next_sample_index..current_sample_index {
-                //     request.tick();
-                //     audio_data[(i % audio_samples_buffer_size) as usize] = request.tone(500.0);
-                // }
-                // next_sample_index = current_sample_index;
+                app.precompute_samples(time_pointer);
 
                 let output_frame = match surface.get_current_texture() {
                     Ok(frame) => frame,
@@ -419,7 +401,7 @@ fn main() {
 
                 // Draw the demo application.
                 //demo_app.ui(&platform.context());
-                app.ui(&platform.context(), &app.samples.clone());
+                app.ui(&platform.context());
 
                 // End the UI frame. We could now handle the output and draw the UI with the backend.
                 let full_output = platform.end_frame(Some(&window));
