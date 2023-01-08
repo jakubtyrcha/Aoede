@@ -86,39 +86,26 @@ impl Default for MyApp {
         engine
             .register_type_with_name::<NodeGraph>("AudioGraph")
             .register_fn("new_graph", NodeGraph::new)
-            .register_fn("add_sine", NodeGraph::add_sine_node)
+            .register_fn("spawn_sine", NodeGraph::spawn_sine_node)
+            .register_fn("spawn_adsr", NodeGraph::spawn_adsr_node)
+            .register_fn("spawn_mix", NodeGraph::spawn_mix_node)
+            .register_fn("link", NodeGraph::link)
             .register_fn("set_sink", NodeGraph::set_sink);
 
         let mut graph = engine
             .eval::<NodeGraph>(
                 "
                 let g = new_graph();
-                let o = g.add_sine();
-                g.set_sink(o);
+                let o = g.spawn_sine();
+                let envp = g.spawn_adsr();
+                let mix = g.spawn_mix();
+                g.link(o, envp);
+                g.link(envp, mix);
+                g.set_sink(mix);
                 g
                 ",
             )
             .unwrap();
-
-        // let mut graph = NodeGraph::new();
-        // let sine = graph.add_node(Rc::new(RefCell::new(SineOscillator { freq: 250.0 })));
-        // let env = graph.add_node(Rc::new(RefCell::new(ADSR {
-        //     attack: 0.1,
-        //     decay: 0.1,
-        //     sustain: 0.2,
-        //     release: 0.3,
-        // })));
-        // let delay = graph.add_node(Rc::new(RefCell::new(Delay {
-        //     delay_samples: 48000 / 10,
-        //     buffered_samples: Vec::new(),
-        // })));
-        // let gain = graph.add_node(Rc::new(RefCell::new(Gain { volume: 0.25 })));
-        // let mix = graph.add_node(Rc::new(RefCell::new(Add {})));
-        // graph.link(sine, env);
-        // graph.link(env, mix);
-        // graph.link(mix, delay);
-        // graph.link(delay, gain);
-        // graph.link(gain, mix);
 
         graph.set_sample_rate(config.sample_rate().0 as i32);
 

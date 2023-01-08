@@ -168,8 +168,19 @@ impl NodeGraph {
         id
     }
 
-    pub fn add_sine_node(&mut self) -> i32 {
+    pub fn spawn_sine_node(&mut self) -> i32 {
         self.add_node(Rc::new(RefCell::new(SineOscillator{ freq: 1000.0 })))
+    }
+
+    pub fn spawn_adsr_node(&mut self) -> i32 {
+        self.add_node(Rc::new(RefCell::new(ADSR{ attack: 0.1,
+            decay: 0.1,
+            sustain: 0.2,
+            release: 0.3, })))
+    }
+
+    pub fn spawn_mix_node(&mut self) -> i32 {
+        self.add_node(Rc::new(RefCell::new(Add{})))
     }
 
     pub fn set_sink(&mut self, sink: i32) {
