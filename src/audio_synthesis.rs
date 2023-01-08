@@ -53,6 +53,37 @@ impl NodeBehaviour for Gain {
     }
 }
 
+pub struct ADSR {
+    pub attack: f32,
+    pub decay: f32,
+    pub sustain: f32,
+    pub release: f32,
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+impl NodeBehaviour for ADSR {
+    fn gen_next_sample(&self, context: Context) -> f32 {
+        let input_node = context.input_nodes[0];
+        let input_sample = context.outputs[input_node as usize];
+        let total_duration = self.attack + self.decay + self.release;
+        let t = context.time.rem_euclid(total_duration);
+
+        let factor = if t < self.attack {
+            lerp(0.0, 1.0, t / self.attack)
+        }
+        else if t < self.attack + self.decay {
+            lerp(1.0, self.sustain, (t - self.attack) / self.decay)
+        }
+        else {
+            lerp(self.sustain, 0.0, (t - self.attack - self.decay) / self.release)
+        };
+        factor * input_sample
+    }
+}
+
 pub struct Add {}
 
 impl NodeBehaviour for Add {

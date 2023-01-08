@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use audio_setup::stream_setup_for;
+use audio_synthesis::ADSR;
 use audio_synthesis::Add;
 use audio_synthesis::Delay;
 use audio_synthesis::Gain;
@@ -79,13 +80,15 @@ impl Default for MyApp {
 
         let mut graph = NodeGraph::new();
         let sine = graph.add_node(Box::new(SineOscillator { freq: 250.0 }));
+        let env = graph.add_node(Box::new(ADSR{ attack: 0.1, decay: 0.1, sustain: 0.2, release: 0.3 }));
         let delay = graph.add_node(Box::new(Delay {
             delay_samples: 48000 / 10,
             buffered_samples: Vec::new(),
         }));
         let gain = graph.add_node(Box::new(Gain { volume: 0.25 }));
         let mix = graph.add_node(Box::new(Add {}));
-        graph.link(sine, mix);
+        graph.link(sine, env);
+        graph.link(env, mix);
         graph.link(mix, delay);
         graph.link(delay, gain);
         graph.link(gain, mix);
