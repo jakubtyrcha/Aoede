@@ -1,18 +1,12 @@
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::iter;
 use std::num::NonZeroU32;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
 use audio_setup::stream_setup_for;
-use audio_synthesis::Add;
-use audio_synthesis::Delay;
-use audio_synthesis::Gain;
+use audio_synthesis::InputSlotEnum;
 use audio_synthesis::NodeGraph;
-use audio_synthesis::SineOscillator;
-use audio_synthesis::ADSR;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
 
@@ -33,6 +27,7 @@ const INITIAL_HEIGHT: u32 = 1080;
 mod audio_setup;
 mod audio_synthesis;
 
+use rhai::plugin::*;
 use rhai::{Engine, EvalAltResult};
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -78,6 +73,19 @@ impl MyApp {
     }
 }
 
+macro_rules! create_enum_module {
+    ($module:ident : $typ:ty => $($variant:ident),+) => {
+        #[export_module]
+        pub mod $module {
+            $(
+                #[allow(non_upper_case_globals)]
+                pub const $variant: $typ = <$typ>::$variant;
+            )*
+        }
+    };
+}
+create_enum_module! { input_slot_enum_module: InputSlotEnum => Input, Freq }
+
 impl Default for MyApp {
     fn default() -> Self {
         let (_host, device, config) = audio_setup::host_device_setup().unwrap();
@@ -89,18 +97,33 @@ impl Default for MyApp {
             .register_fn("spawn_sine", NodeGraph::spawn_sine_node)
             .register_fn("spawn_adsr", NodeGraph::spawn_adsr_node)
             .register_fn("spawn_mix", NodeGraph::spawn_mix_node)
-            .register_fn("link", NodeGraph::link)
-            .register_fn("set_sink", NodeGraph::set_sink);
+            .register_fn("link", NodeGraph::link_node)
+            .register_fn("link", NodeGraph::link_constant)
+            .register_fn("set_sink", NodeGraph::set_sink)
+            .register_type_with_name::<InputSlotEnum>("SlotEnum")
+            .register_static_module("SlotEnum", exported_module!(input_slot_enum_module).into())
+            ;
 
         let mut graph = engine
             .eval::<NodeGraph>(
                 "
                 let g = new_graph();
-                let o = g.spawn_sine();
-                let envp = g.spawn_adsr();
+                let o = g.spawn_sine();//.freq(250.0);
+                // let envp = g.spawn_adsr()
+                //     .attack(0.1)
+                //     .delay(0.1)
+                //     .sustain(0.2)
+                //     .release(0.3);
                 let mix = g.spawn_mix();
-                g.link(o, envp);
-                g.link(envp, mix);
+                // let delay = g.spawn_delay().delay(0.25);
+                // let gain = g.spawn_gain().volume(0.1);
+
+                // g.link(envp, Input, o);
+                g.link(mix, SlotEnum::Input, o);
+                // g.link(mix, Input1, gain);
+                // g.link(delay, Input, mix);
+                // g.link(gain, Input, delay);
+
                 g.set_sink(mix);
                 g
                 ",

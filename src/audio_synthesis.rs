@@ -1,10 +1,23 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::rc::Rc;
 use std::cell::RefCell;
 
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum InputSlotEnum
+{
+    Input,
+    Freq,
+    Attack,
+    Delay,
+    Sustain,
+    Release,
+    Volume
+}
 pub struct Context<'a> {
     time: f32,
     input_nodes: &'a Vec<i32>,
+    input_slots: &'a HashMap<InputSlotEnum, NodeParamInput>,
     outputs: &'a Vec<f32>,
 }
 
@@ -136,10 +149,17 @@ struct Node {
 }
 
 #[derive(Debug, Clone)]
+enum NodeParamInput {
+    Constant(f32),
+    Node(i32)
+}
+
+#[derive(Debug, Clone)]
 pub struct NodeGraph {
     next_id: i32,
     nodes: Vec<Node>,
     node_input_nodes: Vec<Vec<i32>>,
+    node_input_slots: Vec<HashMap<InputSlotEnum, NodeParamInput>>,
     sample_rate: i32,
     current_sample: i32,
     sink_node: Option<i32>
@@ -151,18 +171,20 @@ impl NodeGraph {
             next_id: 0,
             nodes: Vec::new(),
             node_input_nodes: Vec::new(),
+            node_input_slots: Vec::new(),
             sample_rate: 0,
             current_sample: -1,
             sink_node: None
         }
     }
 
-    pub fn add_node(&mut self, behaviour: Rc<RefCell<dyn NodeBehaviour>>) -> i32 {
+    fn add_node(&mut self, behaviour: Rc<RefCell<dyn NodeBehaviour>>) -> i32 {
         self.nodes.push(Node {
             id: self.next_id,
             behaviour,
         });
         self.node_input_nodes.push(Vec::new());
+        self.node_input_slots.push(HashMap::new());
         let id = self.next_id;
         self.next_id += 1;
         id
@@ -187,8 +209,15 @@ impl NodeGraph {
         self.sink_node = Some(sink);
     }
 
-    pub fn link(&mut self, node_from: i32, node_to: i32) {
-        self.node_input_nodes[node_to as usize].push(node_from);
+    pub fn link_node(&mut self, node_to: i32, slot: InputSlotEnum, node_from: i32) {
+        match slot {
+            InputSlotEnum::Input => self.node_input_nodes[node_to as usize].push(node_from),
+            other => self.node_input_slots[node_to as usize].insert(other, NodeParamInput::Node(node_from)).map_or((), |_|()),
+        }
+    }
+
+    pub fn link_constant(&mut self, node_to: i32, slot: InputSlotEnum, value: f32) {
+        self.node_input_slots[node_to as usize].insert(slot, NodeParamInput::Constant(value));
     }
 
     pub fn set_sample_rate(&mut self, num: i32) {
@@ -252,6 +281,7 @@ impl NodeGraph {
                 time: time,
                 outputs: &outputs,
                 input_nodes: &self.node_input_nodes[*v as usize],
+                input_slots: &self.node_input_slots[*v as usize],
             };
 
             let sample = self.nodes[*v as usize].behaviour.borrow().gen_next_sample(context);
@@ -263,6 +293,7 @@ impl NodeGraph {
                 time: time,
                 outputs: &outputs,
                 input_nodes: &self.node_input_nodes[*v as usize],
+                input_slots: &self.node_input_slots[*v as usize],
             };
 
             if !fantom_delay_nodes.contains(v) {
@@ -276,6 +307,7 @@ impl NodeGraph {
                 time: time,
                 outputs: &outputs,
                 input_nodes: &self.node_input_nodes[v as usize],
+                input_slots: &self.node_input_slots[v as usize],
             };
             self.nodes[v as usize].behaviour.borrow_mut().process_outputs(context);
         }
