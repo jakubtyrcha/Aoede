@@ -90,7 +90,7 @@ impl Default for MyApp {
             .register_fn("input", NodeBuilder::set_input)
             .register_fn("freq", NodeBuilder::set_freq)
             .register_custom_operator("->", 160).unwrap()
-            .register_fn("->", |mut x: NodeBuilder, y: NodeBuilder| x.set_input(y));
+            .register_fn("->", |l: NodeBuilder, mut r: NodeBuilder| r.set_input(l));
 
         let mut graph = engine
             .eval::<AudioGraphBuilder>(
@@ -98,7 +98,7 @@ impl Default for MyApp {
                 let g = new_graph();
                 let o = g.spawn_sin().freq(200.0);
                 let mix = g.spawn_mix();
-                mix -> o;
+                o -> mix;
                 g.set_out(mix);
                 g
                 ",
