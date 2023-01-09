@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use audio_setup::stream_setup_for;
+use audio_synthesis::AudioGraph;
+use audio_synthesis::AudioGraphBuilder;
 use audio_synthesis::InputSlotEnum;
 use audio_synthesis::NodeBuilder;
-use audio_synthesis::NodeGraph;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
 
@@ -49,7 +50,7 @@ struct MyApp {
     queue: Arc<crossbeam_queue::ArrayQueue<f32>>,
     samples: Vec<f32>,
     write_index: usize,
-    graph: NodeGraph,
+    graph: AudioGraph,
 }
 
 struct AudioSampleReader {
@@ -74,76 +75,35 @@ impl MyApp {
     }
 }
 
-macro_rules! create_enum_module {
-    ($module:ident : $typ:ty => $($variant:ident),+) => {
-        #[export_module]
-        pub mod $module {
-            $(
-                #[allow(non_upper_case_globals)]
-                pub const $variant: $typ = <$typ>::$variant;
-            )*
-        }
-    };
-}
-create_enum_module! { input_slot_enum_module: InputSlotEnum => Input, Freq }
-
 impl Default for MyApp {
     fn default() -> Self {
         let (_host, device, config) = audio_setup::host_device_setup().unwrap();
 
         let mut engine = Engine::new();
         engine
-            .register_type_with_name::<NodeGraph>("AudioGraph")
-            .register_fn("new_graph", NodeGraph::new)
-            .register_fn("new_graph1", NodeGraph::new1)
-            .register_fn("spawn_sine", NodeGraph::spawn_sine_node)
-            .register_fn("spawn_adsr", NodeGraph::spawn_adsr_node)
-            .register_fn("spawn_mix", NodeGraph::spawn_mix_node)
-            .register_fn("link", NodeGraph::link_node)
-            .register_fn("link", NodeGraph::link_constant_f64)
-            .register_fn("set_sink", NodeGraph::set_sink)
+            .register_type_with_name::<AudioGraphBuilder>("AudioGraphBuilder")
+            .register_fn("new_graph", AudioGraphBuilder::new)
+            .register_fn("spawn_sin", AudioGraphBuilder::spawn_sin)
+            .register_fn("spawn_mix", AudioGraphBuilder::spawn_mix)
+            .register_fn("set_out", AudioGraphBuilder::set_out)
             .register_type_with_name::<NodeBuilder>("NodeBuilder")
-            .register_fn("new_sine", NodeBuilder::new_sine)
-            .register_fn("freq", NodeBuilder::freq)
-            .register_type_with_name::<InputSlotEnum>("In")
-            .register_static_module("In", exported_module!(input_slot_enum_module).into())
-            ;
+            .register_fn("input", NodeBuilder::set_input)
+            .register_fn("freq", NodeBuilder::set_freq)
+            .register_custom_operator("->", 160).unwrap()
+            .register_fn("->", |mut x: NodeBuilder, y: NodeBuilder| x.set_input(y));
 
         let mut graph = engine
-            .eval::<NodeGraph>(
+            .eval::<AudioGraphBuilder>(
                 "
                 let g = new_graph();
-                let o = g.spawn_sine();//.freq(250.0);
-                // let envp = g.spawn_adsr()
-                //     .attack(0.1)
-                //     .delay(0.1)
-                //     .sustain(0.2)
-                //     .release(0.3);
+                let o = g.spawn_sin().freq(200.0);
                 let mix = g.spawn_mix();
-                // let delay = g.spawn_delay().delay(0.25);
-                // let gain = g.spawn_gain().volume(0.1);
-
-                // g.link(envp, Input, o);
-                // o.freq(250.0);
-                // mix.in(o);
-                // g.in(mix, o);
-                // g.freq(o, 250.0);
-                g.link(o, In::Freq, 250.0);
-                g.link(mix, In::Input, o);
-                // g.link(mix, Input1, gain);
-                // g.link(delay, Input, mix);
-                // g.link(gain, Input, delay);
-
-                g.set_sink(mix);
-
-                let g1 = new_graph1();
-                let o1 = new_sine(g1);
-                o1.freq(100.0);
-                
+                mix -> o;
+                g.set_out(mix);
                 g
                 ",
             )
-            .unwrap();
+            .unwrap().extract_graph();
 
         graph.set_sample_rate(config.sample_rate().0 as i32);
 
