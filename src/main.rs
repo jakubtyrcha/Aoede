@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use audio_setup::stream_setup_for;
 use audio_synthesis::InputSlotEnum;
+use audio_synthesis::NodeBuilder;
 use audio_synthesis::NodeGraph;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
@@ -94,12 +95,16 @@ impl Default for MyApp {
         engine
             .register_type_with_name::<NodeGraph>("AudioGraph")
             .register_fn("new_graph", NodeGraph::new)
+            .register_fn("new_graph1", NodeGraph::new1)
             .register_fn("spawn_sine", NodeGraph::spawn_sine_node)
             .register_fn("spawn_adsr", NodeGraph::spawn_adsr_node)
             .register_fn("spawn_mix", NodeGraph::spawn_mix_node)
             .register_fn("link", NodeGraph::link_node)
             .register_fn("link", NodeGraph::link_constant_f64)
             .register_fn("set_sink", NodeGraph::set_sink)
+            .register_type_with_name::<NodeBuilder>("NodeBuilder")
+            .register_fn("new_sine", NodeBuilder::new_sine)
+            .register_fn("freq", NodeBuilder::freq)
             .register_type_with_name::<InputSlotEnum>("In")
             .register_static_module("In", exported_module!(input_slot_enum_module).into())
             ;
@@ -119,6 +124,10 @@ impl Default for MyApp {
                 // let gain = g.spawn_gain().volume(0.1);
 
                 // g.link(envp, Input, o);
+                // o.freq(250.0);
+                // mix.in(o);
+                // g.in(mix, o);
+                // g.freq(o, 250.0);
                 g.link(o, In::Freq, 250.0);
                 g.link(mix, In::Input, o);
                 // g.link(mix, Input1, gain);
@@ -126,6 +135,11 @@ impl Default for MyApp {
                 // g.link(gain, Input, delay);
 
                 g.set_sink(mix);
+
+                let g1 = new_graph1();
+                let o1 = new_sine(g1);
+                o1.freq(100.0);
+                
                 g
                 ",
             )

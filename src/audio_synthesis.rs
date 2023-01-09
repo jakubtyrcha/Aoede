@@ -171,6 +171,23 @@ pub struct NodeGraph {
     sink_node: Option<i32>
 }
 
+#[derive(Debug, Clone)]
+pub struct NodeBuilder {
+    graph: RefCell<NodeGraph>,
+    id: i32
+}
+
+impl NodeBuilder {
+    pub fn new_sine(graph: RefCell<NodeGraph>) -> NodeBuilder {
+        let id = graph.borrow_mut().spawn_sine_node();
+        NodeBuilder{ graph, id }
+    }
+
+    pub fn freq(&mut self, value: f64) {
+        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Freq, value);
+    }
+}
+
 impl NodeGraph {
     pub fn new() -> NodeGraph {
         NodeGraph {
@@ -182,6 +199,18 @@ impl NodeGraph {
             current_sample: -1,
             sink_node: None
         }
+    }
+
+    pub fn new1() -> RefCell<NodeGraph> {
+        RefCell::new(NodeGraph {
+            next_id: 0,
+            nodes: Vec::new(),
+            node_input_nodes: Vec::new(),
+            node_input_slots: Vec::new(),
+            sample_rate: 0,
+            current_sample: -1,
+            sink_node: None
+        })
     }
 
     fn add_node(&mut self, behaviour: Rc<RefCell<dyn NodeBehaviour>>) -> i32 {
