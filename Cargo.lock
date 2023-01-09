@@ -86,6 +86,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "216261ddc8289130e551ddcd5ce8a064710c0d064a4d2895c67151c92b5443f6"
 
 [[package]]
+name = "aoede"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "chrono",
+ "clap",
+ "cpal",
+ "crossbeam-queue",
+ "egui 0.19.0",
+ "egui_demo_lib",
+ "egui_wgpu_backend",
+ "egui_winit_platform",
+ "epi",
+ "pollster",
+ "rhai",
+ "tracing-subscriber",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -855,28 +877,6 @@ checksum = "658f19728920138342f68408b7cf7644d90d4784353d8ebc32e7e8663dbe45fa"
 dependencies = [
  "cmake",
  "pkg-config",
-]
-
-[[package]]
-name = "fantasia"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "chrono",
- "clap",
- "cpal",
- "crossbeam-queue",
- "egui 0.19.0",
- "egui_demo_lib",
- "egui_wgpu_backend",
- "egui_winit_platform",
- "epi",
- "pollster",
- "rhai",
- "tracing-subscriber",
- "wgpu",
- "winit",
 ]
 
 [[package]]
