@@ -8,8 +8,9 @@ pub enum InputSlotEnum
 {
     Input,
     Freq,
-    Attack,
     Delay,
+    Attack,
+    Decay,
     Sustain,
     Release,
     Volume
@@ -82,32 +83,36 @@ impl NodeBehaviour for Gain {
     }
 }
 
-// pub struct ADSR {
-// }
+pub struct ADSR {
+}
 
-// fn lerp(a: f32, b: f32, t: f32) -> f32 {
-//     a + (b - a) * t
-// }
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
 
-// impl NodeBehaviour for ADSR {
-//     fn gen_next_sample(&self, context: Context) -> f32 {
-//         let input_node = context.input_nodes[0];
-//         let input_sample = context.outputs[input_node as usize];
-//         let total_duration = self.attack + self.decay + self.release;
-//         let t = context.time.rem_euclid(total_duration);
+impl NodeBehaviour for ADSR {
+    fn gen_next_sample(&self, context: Context) -> f32 {
+        let input_node = context.input_nodes[0];
+        let input_sample = context.outputs[input_node as usize];
+        let attack = context.read_input(InputSlotEnum::Attack).unwrap_or(1.0);
+        let decay = context.read_input(InputSlotEnum::Decay).unwrap_or(0.0);
+        let release = context.read_input(InputSlotEnum::Release).unwrap_or(0.0);
+        let sustain = context.read_input(InputSlotEnum::Sustain).unwrap_or(0.0);
+        let total_duration = attack + decay + release;
+        let t = context.time.rem_euclid(total_duration);
 
-//         let factor = if t < self.attack {
-//             lerp(0.0, 1.0, t / self.attack)
-//         }
-//         else if t < self.attack + self.decay {
-//             lerp(1.0, self.sustain, (t - self.attack) / self.decay)
-//         }
-//         else {
-//             lerp(self.sustain, 0.0, (t - self.attack - self.decay) / self.release)
-//         };
-//         factor * input_sample
-//     }
-// }
+        let factor = if t < attack {
+            lerp(0.0, 1.0, t / attack)
+        }
+        else if t < attack + decay {
+            lerp(1.0, sustain, (t - attack) / decay)
+        }
+        else {
+            lerp(sustain, 0.0, (t - attack - decay) / release)
+        };
+        factor * input_sample
+    }
+}
 
 pub struct Add {}
 
@@ -202,6 +207,26 @@ impl NodeBuilder {
         self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Delay, value);
         self.clone()
     }
+
+    pub fn set_attack(&mut self, value: f64) -> NodeBuilder {
+        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Attack, value);
+        self.clone()
+    }
+
+    pub fn set_decay(&mut self, value: f64) -> NodeBuilder {
+        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Decay, value);
+        self.clone()
+    }
+
+    pub fn set_sustain(&mut self, value: f64) -> NodeBuilder {
+        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Sustain, value);
+        self.clone()
+    }
+
+    pub fn set_release(&mut self, value: f64) -> NodeBuilder {
+        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Release, value);
+        self.clone()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -235,10 +260,10 @@ impl AudioGraphBuilder {
         NodeBuilder{ graph: self.internal.clone(), id }
     }
 
-    // pub fn spawn_adsr(&mut self) -> NodeBuilder {
-    //     let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(ADSR{})));
-    //     NodeBuilder{ graph: self.internal.clone(), id }
-    // }
+    pub fn spawn_adsr(&mut self) -> NodeBuilder {
+        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(ADSR{})));
+        NodeBuilder{ graph: self.internal.clone(), id }
+    }
 
     pub fn spawn_mix(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(Add{})));
@@ -279,17 +304,6 @@ impl AudioGraph {
         self.next_id += 1;
         id
     }
-
-    // pub fn spawn_adsr_node(&mut self) -> i32 {
-    //     self.add_node(Rc::new(RefCell::new(ADSR{ attack: 0.1,
-    //         decay: 0.1,
-    //         sustain: 0.2,
-    //         release: 0.3, })))
-    // }
-
-    // pub fn spawn_mix_node(&mut self) -> i32 {
-    //     self.add_node(Rc::new(RefCell::new(Add{})))
-    // }
 
     pub fn set_out(&mut self, sink: i32) {
         self.out_node = Some(sink);
