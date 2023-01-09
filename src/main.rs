@@ -50,7 +50,9 @@ struct MyApp {
     queue: Arc<crossbeam_queue::ArrayQueue<f32>>,
     samples: Vec<f32>,
     write_index: usize,
-    graph: AudioGraph,
+    graph: Option<AudioGraph>,
+    picked_path: Option<String>,
+    engine: Engine,
 }
 
 struct AudioSampleReader {
@@ -64,7 +66,11 @@ impl MyApp {
     fn precompute_samples(&mut self, index: usize) {
         let buffer = SAMPLES_PRECOMPUTE_BUFFER_SEC * 48000; // 1 sec ahead
         while self.write_index < index + buffer {
-            let sample = self.graph.gen_next_sample();
+            let sample = if let Some(graph) = &mut self.graph {
+                graph.gen_next_sample()
+            } else {
+                0.0
+            };
 
             let samples_num = self.samples.len();
             self.samples[self.write_index % samples_num] = sample;
@@ -102,27 +108,6 @@ impl Default for MyApp {
             .register_custom_operator("->", 160).unwrap()
             .register_fn("->", |l: NodeBuilder, mut r: NodeBuilder| r.set_input(l));
 
-        let mut graph = engine
-            .eval::<AudioGraphBuilder>(
-                "
-                let g = new_graph();
-                let o = g.spawn_pulse().freq(100.0);
-                let envp = g.spawn_adsr()
-                    .attack(0.5)
-                    .decay(0.1)
-                    .sustain(0.2)
-                    .release(0.4);
-                let mix = g.spawn_mix();
-                o -> envp;
-                envp -> mix;
-                g.set_out(mix);
-                g
-                ",
-            )
-            .unwrap().extract_graph();
-
-        graph.set_sample_rate(config.sample_rate().0 as i32);
-
         let queue_size = config.sample_rate().0 * AUDIO_BUFFER_SEC;
         let q = Arc::new(crossbeam_queue::ArrayQueue::new(queue_size as usize));
 
@@ -145,7 +130,9 @@ impl Default for MyApp {
             queue: q,
             samples,
             write_index: 0,
-            graph,
+            graph: None,
+            picked_path: None,
+            engine
         };
         result.precompute_samples(0);
         result.stream.play().unwrap();
@@ -155,8 +142,46 @@ impl Default for MyApp {
 
 impl MyApp {
     pub fn ui(&mut self, ctx: &Context) {
-        egui::Window::new("Demo").show(ctx, |ui| {
-            ui.heading("My egui Application");
+        egui::Window::new("Aoede").show(ctx, |ui| {
+            if ui.button("Open file…").clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    self.picked_path = Some(path.display().to_string());
+
+                    let mut graph_builder = self.engine.eval_file::<AudioGraphBuilder>(path);
+                    if graph_builder.is_ok() {
+                        let mut graph = graph_builder.unwrap().extract_graph();
+                        graph.set_sample_rate(48000);
+                        self.graph = Some(graph);
+                    }
+
+//                     let mut graph = engine
+//     .eval::<AudioGraphBuilder>(
+//         "
+//         let g = new_graph();
+//         let o = g.spawn_pulse().freq(100.0);
+//         let envp = g.spawn_adsr()
+//             .attack(0.5)
+//             .decay(0.1)
+//             .sustain(0.2)
+//             .release(0.4);
+//         let mix = g.spawn_mix();
+//         o -> envp;
+//         envp -> mix;
+//         g.set_out(mix);
+//         g
+//         ",
+//     )
+//     .unwrap().extract_graph();
+// graph.set_sample_rate(config.sample_rate().0 as i32);
+                }
+            }
+
+            if let Some(picked_path) = &self.picked_path {
+                ui.horizontal(|ui| {
+                    ui.label("Picked file:");
+                    ui.monospace(picked_path);
+                });
+            }
 
             let data_clone = self.samples.clone();
 
