@@ -153,27 +153,16 @@ impl MyApp {
                         graph.set_sample_rate(48000);
                         self.graph = Some(graph);
                     }
-
-//                     let mut graph = engine
-//     .eval::<AudioGraphBuilder>(
-//         "
-//         let g = new_graph();
-//         let o = g.spawn_pulse().freq(100.0);
-//         let envp = g.spawn_adsr()
-//             .attack(0.5)
-//             .decay(0.1)
-//             .sustain(0.2)
-//             .release(0.4);
-//         let mix = g.spawn_mix();
-//         o -> envp;
-//         envp -> mix;
-//         g.set_out(mix);
-//         g
-//         ",
-//     )
-//     .unwrap().extract_graph();
-// graph.set_sample_rate(config.sample_rate().0 as i32);
                 }
+            }
+
+            if ui.button("Reload").clicked() && self.picked_path.is_some() {
+                let mut graph_builder = self.engine.eval_file::<AudioGraphBuilder>(self.picked_path.clone().unwrap().into());
+                    if graph_builder.is_ok() {
+                        let mut graph = graph_builder.unwrap().extract_graph();
+                        graph.set_sample_rate(48000);
+                        self.graph = Some(graph);
+                    }
             }
 
             if let Some(picked_path) = &self.picked_path {
