@@ -1,7 +1,11 @@
 use std::collections::{HashSet, HashMap};
 use std::rc::Rc;
 use std::cell::RefCell;
+use rand::{thread_rng, Rng};
 
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum InputSlotEnum
@@ -72,6 +76,39 @@ impl NodeBehaviour for PulseOscillator {
     }
 }
 
+pub struct SawtoothOscillator {
+}
+
+impl NodeBehaviour for SawtoothOscillator {
+    fn gen_next_sample(&self, context: Context) -> f32 {
+        let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
+        let cycle = 1.0 / freq;
+        lerp(0.0, 1.0, context.time.rem_euclid(cycle) / cycle)
+    }
+}
+
+pub struct TriangleOscillator {
+}
+
+impl NodeBehaviour for TriangleOscillator {
+    fn gen_next_sample(&self, context: Context) -> f32 {
+        let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
+        let cycle = 1.0 / freq;
+        let rem = context.time.rem_euclid(cycle);
+        lerp(0.0, 1.0, (rem - cycle * 0.5).abs() / ( cycle * 0.5 ))
+    }
+}
+
+pub struct RandomOscillator {
+}
+
+impl NodeBehaviour for RandomOscillator {
+    fn gen_next_sample(&self, _: Context) -> f32 {
+        let mut rng = thread_rng();
+        rng.gen_range(0.0..1.0)
+    }
+}
+
 pub struct Gain {
 }
 
@@ -84,10 +121,6 @@ impl NodeBehaviour for Gain {
 }
 
 pub struct ADSR {
-}
-
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
 }
 
 impl NodeBehaviour for ADSR {
@@ -247,6 +280,21 @@ impl AudioGraphBuilder {
 
     pub fn spawn_pulse(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(PulseOscillator{})));
+        NodeBuilder{ graph: self.internal.clone(), id }
+    }
+
+    pub fn spawn_sawtooth(&mut self) -> NodeBuilder {
+        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(SawtoothOscillator{})));
+        NodeBuilder{ graph: self.internal.clone(), id }
+    }
+
+    pub fn spawn_triangle(&mut self) -> NodeBuilder {
+        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(TriangleOscillator{})));
+        NodeBuilder{ graph: self.internal.clone(), id }
+    }
+
+    pub fn spawn_random(&mut self) -> NodeBuilder {
+        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(RandomOscillator{})));
         NodeBuilder{ graph: self.internal.clone(), id }
     }
 
