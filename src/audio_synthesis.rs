@@ -34,12 +34,18 @@ impl std::fmt::Debug for dyn NodeBehaviour {
 }
 
 pub struct SineOscillator {
-    pub freq: f32,
 }
 
 impl NodeBehaviour for SineOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
-        (context.time * self.freq * 2.0 * std::f32::consts::PI).sin()
+        let input = context.input_slots.get(&InputSlotEnum::Freq).copied();
+        let freq = 
+        match input {
+            None => 1000.0,
+            Some(NodeParamInput::Node(x)) => 1000.0,
+            Some(NodeParamInput::Constant(x)) => x,
+        };
+        (context.time * freq * 2.0 * std::f32::consts::PI).sin()
     }
 }
 
@@ -148,7 +154,7 @@ struct Node {
     behaviour: Rc<RefCell<dyn NodeBehaviour>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 enum NodeParamInput {
     Constant(f32),
     Node(i32)
@@ -191,7 +197,7 @@ impl NodeGraph {
     }
 
     pub fn spawn_sine_node(&mut self) -> i32 {
-        self.add_node(Rc::new(RefCell::new(SineOscillator{ freq: 1000.0 })))
+        self.add_node(Rc::new(RefCell::new(SineOscillator{})))
     }
 
     pub fn spawn_adsr_node(&mut self) -> i32 {
@@ -216,8 +222,8 @@ impl NodeGraph {
         }
     }
 
-    pub fn link_constant(&mut self, node_to: i32, slot: InputSlotEnum, value: f32) {
-        self.node_input_slots[node_to as usize].insert(slot, NodeParamInput::Constant(value));
+    pub fn link_constant_f64(&mut self, node_to: i32, slot: InputSlotEnum, value: f64) {
+        self.node_input_slots[node_to as usize].insert(slot, NodeParamInput::Constant(value as f32));
     }
 
     pub fn set_sample_rate(&mut self, num: i32) {

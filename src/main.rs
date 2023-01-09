@@ -98,10 +98,10 @@ impl Default for MyApp {
             .register_fn("spawn_adsr", NodeGraph::spawn_adsr_node)
             .register_fn("spawn_mix", NodeGraph::spawn_mix_node)
             .register_fn("link", NodeGraph::link_node)
-            .register_fn("link", NodeGraph::link_constant)
+            .register_fn("link", NodeGraph::link_constant_f64)
             .register_fn("set_sink", NodeGraph::set_sink)
-            .register_type_with_name::<InputSlotEnum>("SlotEnum")
-            .register_static_module("SlotEnum", exported_module!(input_slot_enum_module).into())
+            .register_type_with_name::<InputSlotEnum>("In")
+            .register_static_module("In", exported_module!(input_slot_enum_module).into())
             ;
 
         let mut graph = engine
@@ -119,7 +119,8 @@ impl Default for MyApp {
                 // let gain = g.spawn_gain().volume(0.1);
 
                 // g.link(envp, Input, o);
-                g.link(mix, SlotEnum::Input, o);
+                g.link(o, In::Freq, 250.0);
+                g.link(mix, In::Input, o);
                 // g.link(mix, Input1, gain);
                 // g.link(delay, Input, mix);
                 // g.link(gain, Input, delay);
