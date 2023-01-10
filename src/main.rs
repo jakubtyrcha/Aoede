@@ -109,7 +109,7 @@ impl Default for MyApp {
             .register_fn("sustain", NodeBuilder::set_sustain)
             .register_fn("release", NodeBuilder::set_release)
             .register_custom_operator("->", 160).unwrap()
-            .register_fn("->", |l: NodeBuilder, mut r: NodeBuilder| r.set_input(l));
+            .register_fn("->", |l: NodeBuilder, mut r: NodeBuilder| { r.set_input(l); r });
 
         let queue_size = config.sample_rate().0 * AUDIO_BUFFER_SEC;
         let q = Arc::new(crossbeam_queue::ArrayQueue::new(queue_size as usize));

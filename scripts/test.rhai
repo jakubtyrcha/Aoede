@@ -8,9 +8,7 @@ let envp = g.spawn_adsr()
 let r = g.spawn_rand();
 let gain = g.spawn_gain().volume(0.1);
 let mix = g.spawn_mix();
-o -> envp;
-envp -> mix;
-r -> gain;
-gain -> mix;
+o -> envp -> mix;
+r -> gain -> mix;
 g.set_out(mix);
 g
