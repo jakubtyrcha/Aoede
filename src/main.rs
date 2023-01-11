@@ -22,6 +22,7 @@ use egui_winit_platform::{Platform, PlatformDescriptor};
 use notify::event::ModifyKind;
 use notify::RecursiveMode;
 use notify::Watcher;
+use rhai::EvalAltResult;
 use wgpu::util::DeviceExt;
 use wgpu::{ImageCopyTexture, Origin3d};
 use winit::event::Event::*;

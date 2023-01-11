@@ -70,9 +70,9 @@ impl NodeBehaviour for SineOscillator {
     }
 }
 
-pub struct SsquareOscillator {}
+pub struct SquareOscillator {}
 
-impl NodeBehaviour for SsquareOscillator {
+impl NodeBehaviour for SquareOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
         let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
         let cycle = 1.0 / freq;
@@ -362,7 +362,7 @@ impl AudioGraphBuilder {
         let id = self
             .internal
             .borrow_mut()
-            .add_node(Rc::new(RefCell::new(SsquareOscillator {})));
+            .add_node(Rc::new(RefCell::new(SquareOscillator {})));
         NodeBuilder {
             graph_builder: self.clone(),
             id,
@@ -504,6 +504,10 @@ impl AudioGraph {
     }
 
     pub fn gen_next_sample(&mut self) -> f32 {
+        if self.out_node.is_none() {
+            return 0.0;
+        }
+
         let mut topo_sort = Vec::<i32>::new();
         let mut next_topo_index = 0;
         // we build per node list of output indices
@@ -621,6 +625,16 @@ impl AudioGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_output_returns_zero() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(1);
+        assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), 0.0);
+    }
+
     #[test]
     fn can_build_a_path() {
         let mut graph_builder = AudioGraphBuilder::new();
