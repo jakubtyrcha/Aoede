@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 use std::iter;
 use std::num::NonZeroU32;
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use audio_script::build_audio_script_engine;
@@ -17,6 +19,9 @@ use egui::plot;
 use egui::Context;
 use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
+use notify::event::ModifyKind;
+use notify::RecursiveMode;
+use notify::Watcher;
 use wgpu::util::DeviceExt;
 use wgpu::{ImageCopyTexture, Origin3d};
 use winit::event::Event::*;
@@ -25,11 +30,11 @@ use winit::event_loop::ControlFlow;
 const INITIAL_WIDTH: u32 = 1920;
 const INITIAL_HEIGHT: u32 = 1080;
 
+mod audio_script;
 mod audio_setup;
 mod audio_synthesis;
-mod audio_script;
 
-use rhai::{Engine};
+use rhai::Engine;
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
@@ -50,9 +55,9 @@ struct MyApp {
     samples: Vec<f32>,
     write_index: usize,
     graph: Option<AudioGraph>,
-    picked_path: Option<String>,
+    picked_path: Option<std::path::PathBuf>,
     engine: Engine,
-    error: Option<Box<rhai::EvalAltResult>>
+    error: Option<Box<rhai::EvalAltResult>>,
 }
 
 struct AudioSampleReader {
@@ -112,7 +117,7 @@ impl Default for MyApp {
             graph: None,
             picked_path: None,
             engine,
-            error: None
+            error: None,
         };
         result.precompute_samples(0);
         result.stream.play().unwrap();
@@ -124,30 +129,41 @@ impl MyApp {
     pub fn recompile_graph(&mut self) {
         let graph_builder = self
             .engine
-            .eval_file::<AudioGraphBuilder>(self.picked_path.clone().unwrap().into());
+            .eval_file::<AudioGraphBuilder>(self.picked_path.clone().unwrap());
         if graph_builder.is_ok() {
             let mut graph = graph_builder.unwrap().extract_graph();
             graph.set_sample_rate(48000);
             self.graph = Some(graph);
             self.error = None;
-        }
-        else {
+        } else {
             self.error = graph_builder.err();
         }
     }
 
-    pub fn ui(&mut self, ctx: &Context) {
+    pub fn ui(&mut self, ctx: &Context, watcher: &mut dyn Watcher, recompile: &Arc<AtomicBool>) {
         egui::Window::new("Aoede").show(ctx, |ui| {
             if ui.button("Open file…").clicked() {
                 if let Some(path) = rfd::FileDialog::new().pick_file() {
-                    self.picked_path = Some(path.display().to_string());
+                    if let Some(path) = &self.picked_path {
+                        watcher.unwatch(&path);
+                    }
 
+                    watcher
+                        .watch(path.as_path(), RecursiveMode::Recursive)
+                        .unwrap();
+
+                    self.picked_path = Some(path);
                     self.recompile_graph();
                 }
             }
 
             if ui.button("Reload").clicked() && self.picked_path.is_some() {
                 self.recompile_graph();
+            }
+
+            if recompile.load(std::sync::atomic::Ordering::SeqCst) {
+                self.recompile_graph();
+                recompile.store(false, std::sync::atomic::Ordering::SeqCst);
             }
 
             if let Some(error) = &self.error {
@@ -157,7 +173,7 @@ impl MyApp {
             if let Some(picked_path) = &self.picked_path {
                 ui.horizontal(|ui| {
                     ui.label("Picked file:");
-                    ui.monospace(picked_path);
+                    ui.monospace(picked_path.as_path().to_str().unwrap());
                 });
             }
 
@@ -263,7 +279,15 @@ fn main() {
     let mut egui_rpass = RenderPass::new(&device, surface_format, 1);
 
     let mut app: MyApp = MyApp::default();
-    //let mut reader = MtRingbufferReader::new(unsafe { AUDIO_RINGBUFFER.as_mut().unwrap() });
+    let recompile = Arc::new(AtomicBool::new(false));
+    let watcher_recompile = recompile.clone();
+    let mut watcher = notify::recommended_watcher(move |res:  Result<notify::Event, notify::Error>| match res {
+        Ok(event) => if event.kind.is_modify() {
+            watcher_recompile.store(true, std::sync::atomic::Ordering::SeqCst);
+        },
+        Err(e) => println!("watch error: {:?}", e),
+    })
+    .unwrap();
 
     // Load the shaders from disk
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -433,7 +457,7 @@ fn main() {
 
                 // Draw the demo application.
                 //demo_app.ui(&platform.context());
-                app.ui(&platform.context());
+                app.ui(&platform.context(), &mut watcher, &recompile);
 
                 // End the UI frame. We could now handle the output and draw the UI with the backend.
                 let full_output = platform.end_frame(Some(&window));
