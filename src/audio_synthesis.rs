@@ -46,7 +46,12 @@ impl Context<'_> {
 pub trait NodeBehaviour {
     fn gen_next_sample(&self, context: Context) -> f32;
     fn process_outputs(&mut self, _: Context) {}
-    fn is_delay(&self) -> bool { false }
+    // Phantom input means the node is replaced by a temporary node with no inputs 
+    // for the purpose of dependency tracking. This is done for delay nodes, so 
+    // that we can break the dependency cycles. The phantom provides the "past"
+    // data without dragging the dependencies that are meaningless in the context
+    // of current evaluation.
+    fn is_phantom_input(&self) -> bool { false }
 }
 
 impl std::fmt::Debug for dyn NodeBehaviour {
@@ -186,7 +191,7 @@ impl NodeBehaviour for Delay {
         self.buffered_samples.push(input_sample);
     }
 
-    fn is_delay(&self) -> bool {
+    fn is_phantom_input(&self) -> bool {
         true
     }
 }
@@ -216,49 +221,53 @@ pub struct AudioGraph {
 
 #[derive(Debug, Clone)]
 pub struct NodeBuilder {
-    graph: Rc<RefCell<AudioGraph>>,
+    graph_builder: AudioGraphBuilder,
     id: i32
 }
 
 impl NodeBuilder {
     pub fn set_input(&mut self, node: NodeBuilder) -> NodeBuilder {
-        self.graph.borrow_mut().link_node(self.id, InputSlotEnum::Input, node.id);
+        self.graph_builder.internal.borrow_mut().link_node(self.id, InputSlotEnum::Input, node.id);
         self.clone()
     }
 
     pub fn set_freq(&mut self, value: f64) -> NodeBuilder {
-        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Freq, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Freq, value);
         self.clone()
     }
 
     pub fn set_volume(&mut self, value: f64) -> NodeBuilder {
-        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Volume, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Volume, value);
         self.clone()
     }
 
     pub fn set_delay(&mut self, value: f64) -> NodeBuilder {
-        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Delay, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Delay, value);
         self.clone()
     }
 
     pub fn set_attack(&mut self, value: f64) -> NodeBuilder {
-        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Attack, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Attack, value);
         self.clone()
     }
 
     pub fn set_decay(&mut self, value: f64) -> NodeBuilder {
-        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Decay, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Decay, value);
         self.clone()
     }
 
     pub fn set_sustain(&mut self, value: f64) -> NodeBuilder {
-        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Sustain, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Sustain, value);
         self.clone()
     }
 
     pub fn set_release(&mut self, value: f64) -> NodeBuilder {
-        self.graph.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Release, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Release, value);
         self.clone()
+    }
+
+    pub fn get_graph(&mut self) -> AudioGraphBuilder {
+        self.graph_builder.clone()
     }
 }
 
@@ -275,47 +284,47 @@ impl AudioGraphBuilder {
     
     pub fn spawn_sin(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(SineOscillator{})));
-        NodeBuilder{ graph: self.internal.clone(), id }
+        NodeBuilder{ graph_builder: self.clone(), id }
     }
 
     pub fn spawn_pulse(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(PulseOscillator{})));
-        NodeBuilder{ graph: self.internal.clone(), id }
+        NodeBuilder{ graph_builder: self.clone(), id }
     }
 
     pub fn spawn_sawtooth(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(SawtoothOscillator{})));
-        NodeBuilder{ graph: self.internal.clone(), id }
+        NodeBuilder{ graph_builder: self.clone(), id }
     }
 
     pub fn spawn_triangle(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(TriangleOscillator{})));
-        NodeBuilder{ graph: self.internal.clone(), id }
+        NodeBuilder{ graph_builder: self.clone(), id }
     }
 
     pub fn spawn_random(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(RandomOscillator{})));
-        NodeBuilder{ graph: self.internal.clone(), id }
+        NodeBuilder{ graph_builder: self.clone(), id }
     }
 
     pub fn spawn_gain(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(Gain{})));
-        NodeBuilder{ graph: self.internal.clone(), id }
+        NodeBuilder{ graph_builder: self.clone(), id }
     }
 
     pub fn spawn_delay(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(Delay::new())));
-        NodeBuilder{ graph: self.internal.clone(), id }
+        NodeBuilder{ graph_builder: self.clone(), id }
     }
 
     pub fn spawn_adsr(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(ADSR{})));
-        NodeBuilder{ graph: self.internal.clone(), id }
+        NodeBuilder{ graph_builder: self.clone(), id }
     }
 
     pub fn spawn_mix(&mut self) -> NodeBuilder {
         let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(Add{})));
-        NodeBuilder{ graph: self.internal.clone(), id }
+        NodeBuilder{ graph_builder: self.clone(), id }
     }
 
     pub fn set_out(&mut self, node: NodeBuilder) {
@@ -385,7 +394,7 @@ impl AudioGraph {
         for node in &self.nodes {
             for input_node_index in &self.node_input_nodes[node.id as usize] {
                 //
-                if !self.nodes[*input_node_index as usize].behaviour.borrow().is_delay() {
+                if !self.nodes[*input_node_index as usize].behaviour.borrow().is_phantom_input() {
                     node_outputs[*input_node_index as usize].push(node.id);
                     node_input_count[node.id as usize] += 1;
                 }
@@ -637,4 +646,7 @@ mod tests {
         assert_eq!(graph.gen_next_sample(), 0.625);
         assert_eq!(graph.gen_next_sample(), 1.3125);
     }
+
+    // test triangle, sawtooth, random
+    // should they go below 0?
 }

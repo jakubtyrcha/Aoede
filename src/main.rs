@@ -1,13 +1,14 @@
+use std::borrow::BorrowMut;
 use std::borrow::Cow;
 use std::iter;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Instant;
 
+use audio_script::build_audio_script_engine;
 use audio_setup::stream_setup_for;
 use audio_synthesis::AudioGraph;
 use audio_synthesis::AudioGraphBuilder;
-use audio_synthesis::InputSlotEnum;
 use audio_synthesis::NodeBuilder;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
@@ -28,9 +29,9 @@ const INITIAL_HEIGHT: u32 = 1080;
 
 mod audio_setup;
 mod audio_synthesis;
+mod audio_script;
 
-use rhai::plugin::*;
-use rhai::{Engine, EvalAltResult};
+use rhai::{Engine};
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
@@ -53,6 +54,7 @@ struct MyApp {
     graph: Option<AudioGraph>,
     picked_path: Option<String>,
     engine: Engine,
+    error: Option<Box<rhai::EvalAltResult>>
 }
 
 struct AudioSampleReader {
@@ -85,31 +87,7 @@ impl Default for MyApp {
     fn default() -> Self {
         let (_host, device, config) = audio_setup::host_device_setup().unwrap();
 
-        let mut engine = Engine::new();
-        engine
-            .register_type_with_name::<AudioGraphBuilder>("AudioGraphBuilder")
-            .register_fn("new_graph", AudioGraphBuilder::new)
-            .register_fn("spawn_sin", AudioGraphBuilder::spawn_sin)
-            .register_fn("spawn_pulse", AudioGraphBuilder::spawn_pulse)
-            .register_fn("spawn_saw", AudioGraphBuilder::spawn_sawtooth)
-            .register_fn("spawn_tri", AudioGraphBuilder::spawn_triangle)
-            .register_fn("spawn_rand", AudioGraphBuilder::spawn_random)
-            .register_fn("spawn_gain", AudioGraphBuilder::spawn_gain)
-            .register_fn("spawn_delay", AudioGraphBuilder::spawn_delay)
-            .register_fn("spawn_adsr", AudioGraphBuilder::spawn_adsr)
-            .register_fn("spawn_mix", AudioGraphBuilder::spawn_mix)
-            .register_fn("set_out", AudioGraphBuilder::set_out)
-            .register_type_with_name::<NodeBuilder>("NodeBuilder")
-            .register_fn("input", NodeBuilder::set_input)
-            .register_fn("freq", NodeBuilder::set_freq)
-            .register_fn("volume", NodeBuilder::set_volume)
-            .register_fn("delay", NodeBuilder::set_delay)
-            .register_fn("attack", NodeBuilder::set_attack)
-            .register_fn("decay", NodeBuilder::set_decay)
-            .register_fn("sustain", NodeBuilder::set_sustain)
-            .register_fn("release", NodeBuilder::set_release)
-            .register_custom_operator("->", 160).unwrap()
-            .register_fn("->", |l: NodeBuilder, mut r: NodeBuilder| { r.set_input(l); r });
+        let mut engine = build_audio_script_engine();
 
         let queue_size = config.sample_rate().0 * AUDIO_BUFFER_SEC;
         let q = Arc::new(crossbeam_queue::ArrayQueue::new(queue_size as usize));
@@ -135,7 +113,8 @@ impl Default for MyApp {
             write_index: 0,
             graph: None,
             picked_path: None,
-            engine
+            engine,
+            error: None
         };
         result.precompute_samples(0);
         result.stream.play().unwrap();
@@ -144,28 +123,37 @@ impl Default for MyApp {
 }
 
 impl MyApp {
+    pub fn recompile_graph(&mut self) {
+        let graph_builder = self
+            .engine
+            .eval_file::<AudioGraphBuilder>(self.picked_path.clone().unwrap().into());
+        if graph_builder.is_ok() {
+            let mut graph = graph_builder.unwrap().extract_graph();
+            graph.set_sample_rate(48000);
+            self.graph = Some(graph);
+            self.error = None;
+        }
+        else {
+            self.error = graph_builder.err();
+        }
+    }
+
     pub fn ui(&mut self, ctx: &Context) {
         egui::Window::new("Aoede").show(ctx, |ui| {
             if ui.button("Open file…").clicked() {
                 if let Some(path) = rfd::FileDialog::new().pick_file() {
                     self.picked_path = Some(path.display().to_string());
 
-                    let mut graph_builder = self.engine.eval_file::<AudioGraphBuilder>(path);
-                    if graph_builder.is_ok() {
-                        let mut graph = graph_builder.unwrap().extract_graph();
-                        graph.set_sample_rate(48000);
-                        self.graph = Some(graph);
-                    }
+                    self.recompile_graph();
                 }
             }
 
             if ui.button("Reload").clicked() && self.picked_path.is_some() {
-                let mut graph_builder = self.engine.eval_file::<AudioGraphBuilder>(self.picked_path.clone().unwrap().into());
-                    if graph_builder.is_ok() {
-                        let mut graph = graph_builder.unwrap().extract_graph();
-                        graph.set_sample_rate(48000);
-                        self.graph = Some(graph);
-                    }
+                self.recompile_graph();
+            }
+
+            if let Some(error) = &self.error {
+                ui.label(error.to_string());
             }
 
             if let Some(picked_path) = &self.picked_path {

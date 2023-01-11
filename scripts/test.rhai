@@ -7,8 +7,5 @@ let envp = g.spawn_adsr()
     .release(0.4);
 let r = g.spawn_rand();
 let gain = g.spawn_gain().volume(0.1);
-let mix = g.spawn_mix();
-o -> envp -> mix;
-r -> gain -> mix;
-g.set_out(mix);
+g.set_out((o -> envp) + (r -> gain));
 g
