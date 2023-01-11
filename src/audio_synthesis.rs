@@ -2,6 +2,7 @@ use rand::{thread_rng, Rng};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::collections::VecDeque;
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
@@ -169,13 +170,13 @@ impl NodeBehaviour for Add {
 }
 
 pub struct Delay {
-    pub buffered_samples: Vec<f32>,
+    pub buffered_samples: VecDeque<f32>,
 }
 
 impl Delay {
     fn new() -> Delay {
         Delay {
-            buffered_samples: Vec::new(),
+            buffered_samples: VecDeque::new(),
         }
     }
 }
@@ -195,19 +196,26 @@ impl NodeBehaviour for Delay {
         }
 
         if self.buffered_samples.len() >= delay_samples as usize {
-            return self.buffered_samples[self.buffered_samples.len() - delay_samples as usize];
+            return self.buffered_samples.front().copied().unwrap_or(0.0);
         }
         0.0
     }
 
     fn process_outputs(&mut self, context: Context) {
+        let delay_samples = (context.read_input(InputSlotEnum::Delay).unwrap_or(1.0)
+            * (context.sample_rate as f32)) as i32;
+
+        if self.buffered_samples.len() >= delay_samples as usize {
+            self.buffered_samples.pop_front();
+        }
+
         if context.input_nodes.is_empty() {
-            self.buffered_samples.push(0.0);
+            self.buffered_samples.push_back(0.0);
             return;
         }
         let input_node = context.input_nodes[0];
         let input_sample = context.outputs[input_node as usize];
-        self.buffered_samples.push(input_sample);
+        self.buffered_samples.push_back(input_sample);
     }
 
     fn is_phantom_input(&self, context: Context) -> bool {
