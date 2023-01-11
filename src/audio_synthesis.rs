@@ -70,14 +70,14 @@ impl NodeBehaviour for SineOscillator {
     }
 }
 
-pub struct PulseOscillator {
+pub struct SquareOscillator {
 }
 
-impl NodeBehaviour for PulseOscillator {
+impl NodeBehaviour for SquareOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
         let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
         let cycle = 1.0 / freq;
-        if context.time.rem_euclid(cycle) < cycle * 0.5 { 1.0 } else { 0.0 }
+        if context.time.rem_euclid(cycle) < cycle * 0.5 { 1.0 } else { -1.0 }
     }
 }
 
@@ -88,7 +88,7 @@ impl NodeBehaviour for SawtoothOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
         let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
         let cycle = 1.0 / freq;
-        lerp(0.0, 1.0, context.time.rem_euclid(cycle) / cycle)
+        lerp(-1.0, 1.0, context.time.rem_euclid(cycle) / cycle)
     }
 }
 
@@ -100,7 +100,7 @@ impl NodeBehaviour for TriangleOscillator {
         let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
         let cycle = 1.0 / freq;
         let rem = context.time.rem_euclid(cycle);
-        lerp(0.0, 1.0, (rem - cycle * 0.5).abs() / ( cycle * 0.5 ))
+        lerp(-1.0, 1.0, (rem - cycle * 0.5).abs() / ( cycle * 0.5 ))
     }
 }
 
@@ -110,7 +110,7 @@ pub struct RandomOscillator {
 impl NodeBehaviour for RandomOscillator {
     fn gen_next_sample(&self, _: Context) -> f32 {
         let mut rng = thread_rng();
-        rng.gen_range(0.0..1.0)
+        rng.gen_range(-1.0..1.0)
     }
 }
 
@@ -287,8 +287,8 @@ impl AudioGraphBuilder {
         NodeBuilder{ graph_builder: self.clone(), id }
     }
 
-    pub fn spawn_pulse(&mut self) -> NodeBuilder {
-        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(PulseOscillator{})));
+    pub fn spawn_square(&mut self) -> NodeBuilder {
+        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(SquareOscillator{})));
         NodeBuilder{ graph_builder: self.clone(), id }
     }
 
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn can_run_a_queue_of_delay_nodes() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let pulse = graph_builder.spawn_pulse().set_freq(0.5);
+        let pulse = graph_builder.spawn_square().set_freq(0.5);
         let mut delay = graph_builder.spawn_delay().set_delay(1.0);
         let mut delay1 = graph_builder.spawn_delay().set_delay(1.0);
         let mut delay2 = graph_builder.spawn_delay().set_delay(1.0);
@@ -564,14 +564,14 @@ mod tests {
         assert_eq!(graph.gen_next_sample(), 0.0);
         assert_eq!(graph.gen_next_sample(), 0.0);
         assert_eq!(graph.gen_next_sample(), 1.0);
-        assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), -1.0);
         assert_eq!(graph.gen_next_sample(), 1.0);
     }
 
     #[test]
     fn can_run_a_queue_of_delay_nodes_constructed_out_of_order() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let pulse = graph_builder.spawn_pulse().set_freq(0.5);
+        let pulse = graph_builder.spawn_square().set_freq(0.5);
         let mut delay2 = graph_builder.spawn_delay().set_delay(1.0);
         let mut delay1 = graph_builder.spawn_delay().set_delay(1.0);
         let mut delay = graph_builder.spawn_delay().set_delay(1.0);
@@ -585,14 +585,14 @@ mod tests {
         assert_eq!(graph.gen_next_sample(), 0.0);
         assert_eq!(graph.gen_next_sample(), 0.0);
         assert_eq!(graph.gen_next_sample(), 1.0);
-        assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), -1.0);
         assert_eq!(graph.gen_next_sample(), 1.0);
     }
 
     #[test]
     fn can_run_a_delay_to_mix_graph() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let pulse = graph_builder.spawn_pulse().set_freq(0.5);
+        let pulse = graph_builder.spawn_square().set_freq(0.5);
         let mut delay = graph_builder.spawn_delay().set_delay(1.0);
         let mut mix = graph_builder.spawn_mix();
         delay.set_input(pulse);
@@ -602,13 +602,13 @@ mod tests {
         graph.set_sample_rate(1);
         assert_eq!(graph.gen_next_sample(), 0.0);
         assert_eq!(graph.gen_next_sample(), 1.0);
-        assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), -1.0);
     }
 
     #[test]
     fn can_run_a_delay_gain_graph() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let pulse = graph_builder.spawn_pulse().set_freq(0.5);
+        let pulse = graph_builder.spawn_square().set_freq(0.5);
         let mut delay = graph_builder.spawn_delay().set_delay(4.0);
         let mut gain = graph_builder.spawn_gain().set_volume(0.5);
         let mut mix = graph_builder.spawn_mix();
@@ -623,13 +623,13 @@ mod tests {
         assert_eq!(graph.gen_next_sample(), 0.0);
         assert_eq!(graph.gen_next_sample(), 0.0);
         assert_eq!(graph.gen_next_sample(), 0.5);
-        assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), -0.5);
     }
 
     #[test]
     fn can_run_a_delay_gain_loop() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let pulse = graph_builder.spawn_pulse().set_freq(0.5);
+        let pulse = graph_builder.spawn_square().set_freq(0.5);
         let mut delay = graph_builder.spawn_delay().set_delay(1.0);
         let mut gain = graph_builder.spawn_gain().set_volume(0.5);
         let mut mix = graph_builder.spawn_mix();
@@ -641,10 +641,10 @@ mod tests {
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(1);
         assert_eq!(graph.gen_next_sample(), 1.0);
-        assert_eq!(graph.gen_next_sample(), 0.5);
-        assert_eq!(graph.gen_next_sample(), 1.25);
-        assert_eq!(graph.gen_next_sample(), 0.625);
-        assert_eq!(graph.gen_next_sample(), 1.3125);
+        assert_eq!(graph.gen_next_sample(), -0.5);
+        assert_eq!(graph.gen_next_sample(), 0.75);
+        assert_eq!(graph.gen_next_sample(), -0.625);
+        assert_eq!(graph.gen_next_sample(), 0.6875);
     }
 
     // test triangle, sawtooth, random

@@ -8,7 +8,7 @@ pub fn build_audio_script_engine() -> Engine {
         .register_type_with_name::<AudioGraphBuilder>("AudioGraphBuilder")
         .register_fn("new_graph", AudioGraphBuilder::new)
         .register_fn("spawn_sin", AudioGraphBuilder::spawn_sin)
-        .register_fn("spawn_pulse", AudioGraphBuilder::spawn_pulse)
+        .register_fn("spawn_square", AudioGraphBuilder::spawn_square)
         .register_fn("spawn_saw", AudioGraphBuilder::spawn_sawtooth)
         .register_fn("spawn_tri", AudioGraphBuilder::spawn_triangle)
         .register_fn("spawn_rand", AudioGraphBuilder::spawn_random)
@@ -49,7 +49,7 @@ mod tests {
         let graph_builder = build_audio_script_engine()
             .eval::<AudioGraphBuilder>("
             let g = new_graph();
-            let o = g.spawn_pulse();
+            let o = g.spawn_square();
             g.set_out(o);
             g
             ");
@@ -60,7 +60,7 @@ mod tests {
     fn can_detect_syntax_error() {
         let graph_builder = build_audio_script_engine()
         .eval::<AudioGraphBuilder>("let g = new_graph();
-        let o = g.spawn_pulse();
+        let o = g.spawn_square();
         g.set_out(o)
         g");
         assert!(graph_builder.is_err());
@@ -71,7 +71,7 @@ mod tests {
         let graph_builder = build_audio_script_engine()
             .eval::<AudioGraphBuilder>("
             let g = new_graph();
-            let o = g.spawn_pulse().freq(0.5);
+            let o = g.spawn_square().freq(0.5);
             let mix = g.spawn_mix();
             mix.input(o);
             g.set_out(mix);
@@ -81,7 +81,7 @@ mod tests {
         let mut graph = graph_builder.unwrap().extract_graph();
         graph.set_sample_rate(1);
         assert_eq!(graph.gen_next_sample(), 1.0);
-        assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), -1.0);
         assert_eq!(graph.gen_next_sample(), 1.0);
     }
 
@@ -90,14 +90,14 @@ mod tests {
         let graph_builder = build_audio_script_engine()
             .eval::<AudioGraphBuilder>("
             let g = new_graph();
-            g.set_out(g.spawn_pulse().freq(0.5) -> g.spawn_mix());
+            g.set_out(g.spawn_square().freq(0.5) -> g.spawn_mix());
             g
             ");
         assert!(graph_builder.is_ok());
         let mut graph = graph_builder.unwrap().extract_graph();
         graph.set_sample_rate(1);
         assert_eq!(graph.gen_next_sample(), 1.0);
-        assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), -1.0);
         assert_eq!(graph.gen_next_sample(), 1.0);
     }
 
@@ -106,8 +106,8 @@ mod tests {
         let graph_builder = build_audio_script_engine()
             .eval::<AudioGraphBuilder>("
             let g = new_graph();
-            let p = g.spawn_pulse().freq(0.5);
-            let p1 = g.spawn_pulse().freq(1.0);
+            let p = g.spawn_square().freq(0.5);
+            let p1 = g.spawn_square().freq(1.0);
             let mix = p + p1;
             g.set_out(mix);
             g
@@ -116,9 +116,9 @@ mod tests {
         let mut graph = graph_builder.unwrap().extract_graph();
         graph.set_sample_rate(2);
         assert_eq!(graph.gen_next_sample(), 2.0);
-        assert_eq!(graph.gen_next_sample(), 1.0);
-        assert_eq!(graph.gen_next_sample(), 1.0);
         assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), -2.0);
     }
 
     #[test]
