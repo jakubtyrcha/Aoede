@@ -1,11 +1,11 @@
 let g = new_graph();
-let o = g.spawn_saw().freq(40.0);
-let envp = g.spawn_adsr()
-    .attack(0.5)
+let o = g.saw().freq(40.0);
+let envp = g.adsr()
+    .attack(0.1)
     .decay(0.1)
     .sustain(0.2)
     .release(0.4);
-let r = g.spawn_rand();
-let gain = g.spawn_gain().volume(0.1);
+let r = g.rand();
+let gain = g.gain().volume(0.2);
 g.set_out((o -> envp) + (r -> gain));
 g

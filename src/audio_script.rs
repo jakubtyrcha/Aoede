@@ -7,15 +7,15 @@ pub fn build_audio_script_engine() -> Engine {
     engine
         .register_type_with_name::<AudioGraphBuilder>("AudioGraphBuilder")
         .register_fn("new_graph", AudioGraphBuilder::new)
-        .register_fn("spawn_sin", AudioGraphBuilder::spawn_sin)
-        .register_fn("spawn_square", AudioGraphBuilder::spawn_square)
-        .register_fn("spawn_saw", AudioGraphBuilder::spawn_sawtooth)
-        .register_fn("spawn_tri", AudioGraphBuilder::spawn_triangle)
-        .register_fn("spawn_rand", AudioGraphBuilder::spawn_random)
-        .register_fn("spawn_gain", AudioGraphBuilder::spawn_gain)
-        .register_fn("spawn_delay", AudioGraphBuilder::spawn_delay)
-        .register_fn("spawn_adsr", AudioGraphBuilder::spawn_adsr)
-        .register_fn("spawn_mix", AudioGraphBuilder::spawn_mix)
+        .register_fn("sin", AudioGraphBuilder::sin)
+        .register_fn("square", AudioGraphBuilder::square)
+        .register_fn("saw", AudioGraphBuilder::sawtooth)
+        .register_fn("tri", AudioGraphBuilder::triangle)
+        .register_fn("rand", AudioGraphBuilder::random)
+        .register_fn("gain", AudioGraphBuilder::gain)
+        .register_fn("delay", AudioGraphBuilder::delay)
+        .register_fn("adsr", AudioGraphBuilder::adsr)
+        .register_fn("mix", AudioGraphBuilder::mix)
         .register_fn("set_out", AudioGraphBuilder::set_out)
         .register_type_with_name::<NodeBuilder>("NodeBuilder")
         .register_fn("input", NodeBuilder::set_input)
@@ -34,7 +34,7 @@ pub fn build_audio_script_engine() -> Engine {
         })
         .register_fn("+", |mut l: NodeBuilder, r: NodeBuilder| {
             let mut g = l.get_graph();
-            g.spawn_mix().set_input(l).set_input(r)
+            g.mix().set_input(l).set_input(r)
         });
     engine
 }
@@ -47,7 +47,7 @@ mod tests {
         let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
             "
             let g = new_graph();
-            let o = g.spawn_square();
+            let o = g.square();
             g.set_out(o);
             g
             ",
@@ -59,7 +59,7 @@ mod tests {
     fn can_detect_syntax_error() {
         let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
             "let g = new_graph();
-        let o = g.spawn_square();
+        let o = g.square();
         g.set_out(o)
         g",
         );
@@ -71,8 +71,8 @@ mod tests {
         let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
             "
             let g = new_graph();
-            let o = g.spawn_square().freq(0.5);
-            let mix = g.spawn_mix();
+            let o = g.square().freq(0.5);
+            let mix = g.mix();
             mix.input(o);
             g.set_out(mix);
             g
@@ -91,7 +91,7 @@ mod tests {
         let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
             "
             let g = new_graph();
-            g.set_out(g.spawn_square().freq(0.5) -> g.spawn_mix());
+            g.set_out(g.square().freq(0.5) -> g.mix());
             g
             ",
         );
@@ -108,8 +108,8 @@ mod tests {
         let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
             "
             let g = new_graph();
-            let p = g.spawn_square().freq(0.5);
-            let p1 = g.spawn_square().freq(1.0);
+            let p = g.square().freq(0.5);
+            let p1 = g.square().freq(1.0);
             let mix = p + p1;
             g.set_out(mix);
             g
@@ -129,7 +129,7 @@ mod tests {
         let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
             "
         let g = new_graph();
-        let d = g.spawn_delay();
+        let d = g.delay();
         g.set_out(d);
         g
         ",
