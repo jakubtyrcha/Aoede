@@ -1,15 +1,14 @@
-use std::collections::{HashSet, HashMap};
-use std::rc::Rc;
-use std::cell::RefCell;
 use rand::{thread_rng, Rng};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum InputSlotEnum
-{
+pub enum InputSlotEnum {
     Input,
     Freq,
     Delay,
@@ -17,7 +16,7 @@ pub enum InputSlotEnum
     Decay,
     Sustain,
     Release,
-    Volume
+    Volume,
 }
 pub struct Context<'a> {
     time: f32,
@@ -30,13 +29,12 @@ pub struct Context<'a> {
 impl Context<'_> {
     fn read_input(&self, slot: InputSlotEnum) -> Option<f32> {
         let input = self.input_slots.get(&slot).copied();
-        let value = 
-        match input {
+        let value = match input {
             None => None,
-            Some(NodeParamInput::Node(id)) => {
+            Some(NodeParamInput::Node(_id)) => {
                 // TODO: read from node output
                 None
-            },
+            }
             Some(NodeParamInput::Constant(value)) => Some(value),
         };
         value
@@ -46,12 +44,14 @@ impl Context<'_> {
 pub trait NodeBehaviour {
     fn gen_next_sample(&self, context: Context) -> f32;
     fn process_outputs(&mut self, _: Context) {}
-    // Phantom input means the node is replaced by a temporary node with no inputs 
-    // for the purpose of dependency tracking. This is done for delay nodes, so 
+    // Phantom input means the node is replaced by a temporary node with no inputs
+    // for the purpose of dependency tracking. This is done for delay nodes, so
     // that we can break the dependency cycles. The phantom provides the "past"
     // data without dragging the dependencies that are meaningless in the context
     // of current evaluation.
-    fn is_phantom_input(&self) -> bool { false }
+    fn is_phantom_input(&self, _: Context) -> bool {
+        false
+    }
 }
 
 impl std::fmt::Debug for dyn NodeBehaviour {
@@ -60,8 +60,7 @@ impl std::fmt::Debug for dyn NodeBehaviour {
     }
 }
 
-pub struct SineOscillator {
-}
+pub struct SineOscillator {}
 
 impl NodeBehaviour for SineOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
@@ -70,19 +69,21 @@ impl NodeBehaviour for SineOscillator {
     }
 }
 
-pub struct SquareOscillator {
-}
+pub struct SquareOscillator {}
 
 impl NodeBehaviour for SquareOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
         let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
         let cycle = 1.0 / freq;
-        if context.time.rem_euclid(cycle) < cycle * 0.5 { 1.0 } else { -1.0 }
+        if context.time.rem_euclid(cycle) < cycle * 0.5 {
+            1.0
+        } else {
+            -1.0
+        }
     }
 }
 
-pub struct SawtoothOscillator {
-}
+pub struct SawtoothOscillator {}
 
 impl NodeBehaviour for SawtoothOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
@@ -92,20 +93,21 @@ impl NodeBehaviour for SawtoothOscillator {
     }
 }
 
-pub struct TriangleOscillator {
-}
+pub struct TriangleOscillator {}
 
 impl NodeBehaviour for TriangleOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
         let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
+        if freq == 0.0 {
+            return -1.0;
+        }
         let cycle = 1.0 / freq;
         let rem = context.time.rem_euclid(cycle);
-        lerp(-1.0, 1.0, (rem - cycle * 0.5).abs() / ( cycle * 0.5 ))
+        lerp(-1.0, 1.0, (rem - cycle * 0.5).abs() / (cycle * 0.5))
     }
 }
 
-pub struct RandomOscillator {
-}
+pub struct RandomOscillator {}
 
 impl NodeBehaviour for RandomOscillator {
     fn gen_next_sample(&self, _: Context) -> f32 {
@@ -114,22 +116,26 @@ impl NodeBehaviour for RandomOscillator {
     }
 }
 
-pub struct Gain {
-}
+pub struct Gain {}
 
 impl NodeBehaviour for Gain {
     fn gen_next_sample(&self, context: Context) -> f32 {
+        if context.input_nodes.is_empty() {
+            return 0.0;
+        }
         let input_node = context.input_nodes[0];
         let input_sample = context.outputs[input_node as usize];
         input_sample * context.read_input(InputSlotEnum::Volume).unwrap_or(1.0)
     }
 }
 
-pub struct ADSR {
-}
+pub struct ADSR {}
 
 impl NodeBehaviour for ADSR {
     fn gen_next_sample(&self, context: Context) -> f32 {
+        if context.input_nodes.is_empty() {
+            return 0.0;
+        }
         let input_node = context.input_nodes[0];
         let input_sample = context.outputs[input_node as usize];
         let attack = context.read_input(InputSlotEnum::Attack).unwrap_or(1.0);
@@ -141,11 +147,9 @@ impl NodeBehaviour for ADSR {
 
         let factor = if t < attack {
             lerp(0.0, 1.0, t / attack)
-        }
-        else if t < attack + decay {
+        } else if t < attack + decay {
             lerp(1.0, sustain, (t - attack) / decay)
-        }
-        else {
+        } else {
             lerp(sustain, 0.0, (t - attack - decay) / release)
         };
         factor * input_sample
@@ -170,28 +174,49 @@ pub struct Delay {
 
 impl Delay {
     fn new() -> Delay {
-        Delay{ buffered_samples: Vec::new() }
+        Delay {
+            buffered_samples: Vec::new(),
+        }
     }
 }
 
 impl NodeBehaviour for Delay {
     fn gen_next_sample(&self, context: Context) -> f32 {
-        let delay_samples = (context.read_input(InputSlotEnum::Delay).unwrap_or(1.0) * (context.sample_rate as f32)) as usize;
+        let delay_samples = (context.read_input(InputSlotEnum::Delay).unwrap_or(1.0)
+            * (context.sample_rate as f32)) as i32;
+
+        if delay_samples <= 0 {
+            if context.input_nodes.is_empty() {
+                return 0.0;
+            }
+            let input_node = context.input_nodes[0];
+            let input_sample = context.outputs[input_node as usize];
+            return input_sample;
+        }
 
         if self.buffered_samples.len() >= delay_samples as usize {
-            return self.buffered_samples
-                [self.buffered_samples.len() - delay_samples as usize];
+            return self.buffered_samples[self.buffered_samples.len() - delay_samples as usize];
         }
         0.0
     }
 
     fn process_outputs(&mut self, context: Context) {
+        if context.input_nodes.is_empty() {
+            self.buffered_samples.push(0.0);
+            return;
+        }
         let input_node = context.input_nodes[0];
         let input_sample = context.outputs[input_node as usize];
         self.buffered_samples.push(input_sample);
     }
 
-    fn is_phantom_input(&self) -> bool {
+    fn is_phantom_input(&self, context: Context) -> bool {
+        let delay_samples = (context.read_input(InputSlotEnum::Delay).unwrap_or(1.0)
+            * (context.sample_rate as f32)) as usize;
+
+        if delay_samples <= 0 {
+            return false;
+        }
         true
     }
 }
@@ -205,7 +230,7 @@ struct Node {
 #[derive(Debug, Clone, Copy)]
 enum NodeParamInput {
     Constant(f32),
-    Node(i32)
+    Node(i32),
 }
 
 #[derive(Debug, Clone)]
@@ -216,53 +241,84 @@ pub struct AudioGraph {
     node_input_slots: Vec<HashMap<InputSlotEnum, NodeParamInput>>,
     sample_rate: i32,
     current_sample: i32,
-    out_node: Option<i32>
+    out_node: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
 pub struct NodeBuilder {
     graph_builder: AudioGraphBuilder,
-    id: i32
+    id: i32,
 }
 
 impl NodeBuilder {
     pub fn set_input(&mut self, node: NodeBuilder) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_node(self.id, InputSlotEnum::Input, node.id);
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_node(self.id, InputSlotEnum::Input, node.id);
         self.clone()
     }
 
     pub fn set_freq(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Freq, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(
+            self.id,
+            InputSlotEnum::Freq,
+            value,
+        );
         self.clone()
     }
 
     pub fn set_volume(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Volume, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(
+            self.id,
+            InputSlotEnum::Volume,
+            value,
+        );
         self.clone()
     }
 
     pub fn set_delay(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Delay, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(
+            self.id,
+            InputSlotEnum::Delay,
+            value,
+        );
         self.clone()
     }
 
     pub fn set_attack(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Attack, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(
+            self.id,
+            InputSlotEnum::Attack,
+            value,
+        );
         self.clone()
     }
 
     pub fn set_decay(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Decay, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(
+            self.id,
+            InputSlotEnum::Decay,
+            value,
+        );
         self.clone()
     }
 
     pub fn set_sustain(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Sustain, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(
+            self.id,
+            InputSlotEnum::Sustain,
+            value,
+        );
         self.clone()
     }
 
     pub fn set_release(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(self.id, InputSlotEnum::Release, value);
+        self.graph_builder.internal.borrow_mut().link_constant_f64(
+            self.id,
+            InputSlotEnum::Release,
+            value,
+        );
         self.clone()
     }
 
@@ -272,59 +328,114 @@ impl NodeBuilder {
 }
 
 #[derive(Debug, Clone)]
-pub struct AudioGraphBuilder 
-{
-    internal: Rc<RefCell<AudioGraph>>
+pub struct AudioGraphBuilder {
+    internal: Rc<RefCell<AudioGraph>>,
 }
 
 impl AudioGraphBuilder {
     pub fn new() -> AudioGraphBuilder {
-        AudioGraphBuilder{ internal: Rc::new(RefCell::new(AudioGraph::new())) }
+        AudioGraphBuilder {
+            internal: Rc::new(RefCell::new(AudioGraph::new())),
+        }
     }
-    
+
     pub fn spawn_sin(&mut self) -> NodeBuilder {
-        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(SineOscillator{})));
-        NodeBuilder{ graph_builder: self.clone(), id }
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(SineOscillator {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
     }
 
     pub fn spawn_square(&mut self) -> NodeBuilder {
-        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(SquareOscillator{})));
-        NodeBuilder{ graph_builder: self.clone(), id }
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(SquareOscillator {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
     }
 
     pub fn spawn_sawtooth(&mut self) -> NodeBuilder {
-        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(SawtoothOscillator{})));
-        NodeBuilder{ graph_builder: self.clone(), id }
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(SawtoothOscillator {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
     }
 
     pub fn spawn_triangle(&mut self) -> NodeBuilder {
-        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(TriangleOscillator{})));
-        NodeBuilder{ graph_builder: self.clone(), id }
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(TriangleOscillator {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
     }
 
     pub fn spawn_random(&mut self) -> NodeBuilder {
-        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(RandomOscillator{})));
-        NodeBuilder{ graph_builder: self.clone(), id }
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(RandomOscillator {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
     }
 
     pub fn spawn_gain(&mut self) -> NodeBuilder {
-        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(Gain{})));
-        NodeBuilder{ graph_builder: self.clone(), id }
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(Gain {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
     }
 
     pub fn spawn_delay(&mut self) -> NodeBuilder {
-        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(Delay::new())));
-        NodeBuilder{ graph_builder: self.clone(), id }
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(Delay::new())));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
     }
 
     pub fn spawn_adsr(&mut self) -> NodeBuilder {
-        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(ADSR{})));
-        NodeBuilder{ graph_builder: self.clone(), id }
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(ADSR {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
     }
 
     pub fn spawn_mix(&mut self) -> NodeBuilder {
-        let id = self.internal.borrow_mut().add_node(Rc::new(RefCell::new(Add{})));
-        NodeBuilder{ graph_builder: self.clone(), id }
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(Add {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
     }
 
     pub fn set_out(&mut self, node: NodeBuilder) {
@@ -346,7 +457,7 @@ impl AudioGraph {
             node_input_slots: Vec::new(),
             sample_rate: 0,
             current_sample: -1,
-            out_node: None
+            out_node: None,
         }
     }
 
@@ -369,12 +480,15 @@ impl AudioGraph {
     pub fn link_node(&mut self, node_to: i32, slot: InputSlotEnum, node_from: i32) {
         match slot {
             InputSlotEnum::Input => self.node_input_nodes[node_to as usize].push(node_from),
-            other => self.node_input_slots[node_to as usize].insert(other, NodeParamInput::Node(node_from)).map_or((), |_|()),
+            other => self.node_input_slots[node_to as usize]
+                .insert(other, NodeParamInput::Node(node_from))
+                .map_or((), |_| ()),
         }
     }
 
     pub fn link_constant_f64(&mut self, node_to: i32, slot: InputSlotEnum, value: f64) {
-        self.node_input_slots[node_to as usize].insert(slot, NodeParamInput::Constant(value as f32));
+        self.node_input_slots[node_to as usize]
+            .insert(slot, NodeParamInput::Constant(value as f32));
     }
 
     pub fn set_sample_rate(&mut self, num: i32) {
@@ -390,19 +504,37 @@ impl AudioGraph {
         let mut node_input_count = Vec::<i32>::new();
         node_outputs.resize_with(self.nodes.len(), || Vec::new());
         node_input_count.resize(self.nodes.len(), 0);
-        let mut fantom_delay_nodes = HashSet::<i32>::new();
+        let mut phantom_delay_nodes = HashSet::<i32>::new();
+
+        //
+        let mut outputs = Vec::<f32>::new();
+        outputs.resize(self.nodes.len(), 0.0);
+
+        self.current_sample += 1;
+        let time = self.current_sample as f32 / self.sample_rate as f32;
         for node in &self.nodes {
             for input_node_index in &self.node_input_nodes[node.id as usize] {
                 //
-                if !self.nodes[*input_node_index as usize].behaviour.borrow().is_phantom_input() {
+                let context = Context {
+                    time: time,
+                    sample_rate: self.sample_rate,
+                    outputs: &outputs,
+                    input_nodes: &self.node_input_nodes[*input_node_index as usize],
+                    input_slots: &self.node_input_slots[*input_node_index as usize],
+                };
+
+                if !self.nodes[*input_node_index as usize]
+                    .behaviour
+                    .borrow()
+                    .is_phantom_input(context)
+                {
                     node_outputs[*input_node_index as usize].push(node.id);
                     node_input_count[node.id as usize] += 1;
-                }
-                else {
-                    // we don't treat the delay node as input node, but we 
-                    // make a "fantom" input node with 0 inputs, that we process before the topo 
+                } else {
+                    // we don't treat the delay node as input node, but we
+                    // make a "phantom" input node with 0 inputs, that we process before the topo
                     // ordered processing
-                    fantom_delay_nodes.insert(*input_node_index);
+                    phantom_delay_nodes.insert(*input_node_index);
                 }
             }
 
@@ -426,14 +558,7 @@ impl AudioGraph {
             }
         }
 
-        //
-        let mut outputs = Vec::<f32>::new();
-        outputs.resize(self.nodes.len(), 0.0);
-
-        self.current_sample += 1;
-        let time = self.current_sample as f32 / self.sample_rate as f32;
-
-        for v in &fantom_delay_nodes {
+        for v in &phantom_delay_nodes {
             let context = Context {
                 time: time,
                 sample_rate: self.sample_rate,
@@ -442,7 +567,10 @@ impl AudioGraph {
                 input_slots: &self.node_input_slots[*v as usize],
             };
 
-            let sample = self.nodes[*v as usize].behaviour.borrow().gen_next_sample(context);
+            let sample = self.nodes[*v as usize]
+                .behaviour
+                .borrow()
+                .gen_next_sample(context);
             outputs[*v as usize] = sample;
         }
 
@@ -455,8 +583,11 @@ impl AudioGraph {
                 input_slots: &self.node_input_slots[*v as usize],
             };
 
-            if !fantom_delay_nodes.contains(v) {
-                let sample = self.nodes[*v as usize].behaviour.borrow().gen_next_sample(context);
+            if !phantom_delay_nodes.contains(v) {
+                let sample = self.nodes[*v as usize]
+                    .behaviour
+                    .borrow()
+                    .gen_next_sample(context);
                 outputs[*v as usize] = sample;
             }
         }
@@ -469,7 +600,10 @@ impl AudioGraph {
                 input_nodes: &self.node_input_nodes[v as usize],
                 input_slots: &self.node_input_slots[v as usize],
             };
-            self.nodes[v as usize].behaviour.borrow_mut().process_outputs(context);
+            self.nodes[v as usize]
+                .behaviour
+                .borrow_mut()
+                .process_outputs(context);
         }
 
         outputs[self.out_node.unwrap() as usize]
@@ -647,6 +781,49 @@ mod tests {
         assert_eq!(graph.gen_next_sample(), 0.6875);
     }
 
-    // test triangle, sawtooth, random
-    // should they go below 0?
+    #[test]
+    fn delay_can_have_disconnected_input() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let delay = graph_builder.spawn_delay().set_delay(1.0);
+        graph_builder.set_out(delay);
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(1);
+        assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), 0.0);
+    }
+
+    #[test]
+    fn square_freq_can_be_zero() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let o = graph_builder.spawn_square().set_freq(0.0);
+        graph_builder.set_out(o);
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(1);
+        assert_eq!(graph.gen_next_sample(), 1.0);
+        assert_eq!(graph.gen_next_sample(), 1.0);
+    }
+
+    #[test]
+    fn triangle_freq_can_be_zero() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let o = graph_builder.spawn_triangle().set_freq(0.0);
+        graph_builder.set_out(o);
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(1);
+        assert_eq!(graph.gen_next_sample(), -1.0);
+        assert_eq!(graph.gen_next_sample(), -1.0);
+    }
+
+    #[test]
+    fn delay_can_be_zero() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let o = graph_builder.spawn_square().set_freq(0.5);
+        let mut delay = graph_builder.spawn_delay().set_delay(0.0);
+        delay.set_input(o);
+        graph_builder.set_out(delay);
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(1);
+        assert_eq!(graph.gen_next_sample(), 1.0);
+        assert_eq!(graph.gen_next_sample(), -1.0);
+    }
 }

@@ -1,4 +1,3 @@
-use std::borrow::BorrowMut;
 use std::borrow::Cow;
 use std::iter;
 use std::num::NonZeroU32;
@@ -9,7 +8,6 @@ use audio_script::build_audio_script_engine;
 use audio_setup::stream_setup_for;
 use audio_synthesis::AudioGraph;
 use audio_synthesis::AudioGraphBuilder;
-use audio_synthesis::NodeBuilder;
 use bytemuck::{Pod, Zeroable};
 use cpal::traits::StreamTrait;
 
@@ -87,7 +85,7 @@ impl Default for MyApp {
     fn default() -> Self {
         let (_host, device, config) = audio_setup::host_device_setup().unwrap();
 
-        let mut engine = build_audio_script_engine();
+        let engine = build_audio_script_engine();
 
         let queue_size = config.sample_rate().0 * AUDIO_BUFFER_SEC;
         let q = Arc::new(crossbeam_queue::ArrayQueue::new(queue_size as usize));

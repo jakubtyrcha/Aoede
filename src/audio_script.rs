@@ -41,42 +41,43 @@ pub fn build_audio_script_engine() -> Engine {
 
 #[cfg(test)]
 mod tests {
-    use rhai::EvalAltResult;
-
     use super::*;
     #[test]
     fn can_compile_basic_script() {
-        let graph_builder = build_audio_script_engine()
-            .eval::<AudioGraphBuilder>("
+        let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
+            "
             let g = new_graph();
             let o = g.spawn_square();
             g.set_out(o);
             g
-            ");
+            ",
+        );
         assert!(graph_builder.is_ok());
     }
 
     #[test]
     fn can_detect_syntax_error() {
-        let graph_builder = build_audio_script_engine()
-        .eval::<AudioGraphBuilder>("let g = new_graph();
+        let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
+            "let g = new_graph();
         let o = g.spawn_square();
         g.set_out(o)
-        g");
+        g",
+        );
         assert!(graph_builder.is_err());
     }
 
     #[test]
     fn can_connect_nodes() {
-        let graph_builder = build_audio_script_engine()
-            .eval::<AudioGraphBuilder>("
+        let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
+            "
             let g = new_graph();
             let o = g.spawn_square().freq(0.5);
             let mix = g.spawn_mix();
             mix.input(o);
             g.set_out(mix);
             g
-            ");
+            ",
+        );
         assert!(graph_builder.is_ok());
         let mut graph = graph_builder.unwrap().extract_graph();
         graph.set_sample_rate(1);
@@ -87,12 +88,13 @@ mod tests {
 
     #[test]
     fn can_connect_nodes_using_operator() {
-        let graph_builder = build_audio_script_engine()
-            .eval::<AudioGraphBuilder>("
+        let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
+            "
             let g = new_graph();
             g.set_out(g.spawn_square().freq(0.5) -> g.spawn_mix());
             g
-            ");
+            ",
+        );
         assert!(graph_builder.is_ok());
         let mut graph = graph_builder.unwrap().extract_graph();
         graph.set_sample_rate(1);
@@ -103,15 +105,16 @@ mod tests {
 
     #[test]
     fn can_build_graph_with_math_operators() {
-        let graph_builder = build_audio_script_engine()
-            .eval::<AudioGraphBuilder>("
+        let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
+            "
             let g = new_graph();
             let p = g.spawn_square().freq(0.5);
             let p1 = g.spawn_square().freq(1.0);
             let mix = p + p1;
             g.set_out(mix);
             g
-            ");
+            ",
+        );
         assert!(graph_builder.is_ok());
         let mut graph = graph_builder.unwrap().extract_graph();
         graph.set_sample_rate(2);
@@ -123,6 +126,18 @@ mod tests {
 
     #[test]
     fn delay_can_have_disconnected_input() {
-
+        let graph_builder = build_audio_script_engine().eval::<AudioGraphBuilder>(
+            "
+        let g = new_graph();
+        let d = g.spawn_delay();
+        g.set_out(d);
+        g
+        ",
+        );
+        assert!(graph_builder.is_ok());
+        let mut graph = graph_builder.unwrap().extract_graph();
+        graph.set_sample_rate(1);
+        assert_eq!(graph.gen_next_sample(), 0.0);
+        assert_eq!(graph.gen_next_sample(), 0.0);
     }
 }
