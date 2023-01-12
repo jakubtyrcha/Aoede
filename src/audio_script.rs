@@ -47,6 +47,14 @@ pub fn build_audio_script_engine() -> Engine {
         .register_fn("+", |mut l: NodeBuilder, r: f64| {
             let mut g = l.get_graph();
             g.mix().set_input_node(l).set_input_constant(r)
+        })
+        .register_fn("*", |mut l: NodeBuilder, r: NodeBuilder| {
+            let mut g = l.get_graph();
+            g.gain().set_input_node(l).set_volume_node(r)
+        })
+        .register_fn("*", |mut l: NodeBuilder, r: f64| {
+            let mut g = l.get_graph();
+            g.gain().set_input_node(l).set_volume_constant(r)
         });
     engine
 }
