@@ -270,7 +270,7 @@ pub struct NodeBuilder {
 }
 
 impl NodeBuilder {
-    pub fn set_input(&mut self, node: NodeBuilder) -> NodeBuilder {
+    pub fn set_input_node(&mut self, node: NodeBuilder) -> NodeBuilder {
         self.graph_builder
             .internal
             .borrow_mut()
@@ -278,7 +278,15 @@ impl NodeBuilder {
         self.clone()
     }
 
-    pub fn set_freq(&mut self, value: f64) -> NodeBuilder {
+    pub fn set_input_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_constant_f64(self.id, value);
+        self.clone()
+    }
+
+    pub fn set_freq_constant(&mut self, value: f64) -> NodeBuilder {
         self.graph_builder
             .internal
             .borrow_mut()
@@ -286,7 +294,15 @@ impl NodeBuilder {
         self.clone()
     }
 
-    pub fn set_volume(&mut self, value: f64) -> NodeBuilder {
+    pub fn set_freq_node(&mut self, node: NodeBuilder) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_node(self.id, NamedInputEnum::Freq, node.id);
+        self.clone()
+    }
+
+    pub fn set_volume_constant(&mut self, value: f64) -> NodeBuilder {
         self.graph_builder
             .internal
             .borrow_mut()
@@ -294,7 +310,15 @@ impl NodeBuilder {
         self.clone()
     }
 
-    pub fn set_delay(&mut self, value: f64) -> NodeBuilder {
+    pub fn set_volume_node(&mut self, node: NodeBuilder) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_node(self.id, NamedInputEnum::Volume, node.id);
+        self.clone()
+    }
+
+    pub fn set_delay_constant(&mut self, value: f64) -> NodeBuilder {
         self.graph_builder
             .internal
             .borrow_mut()
@@ -302,7 +326,15 @@ impl NodeBuilder {
         self.clone()
     }
 
-    pub fn set_attack(&mut self, value: f64) -> NodeBuilder {
+    pub fn set_delay_node(&mut self, node: NodeBuilder) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_node(self.id, NamedInputEnum::Delay, node.id);
+        self.clone()
+    }
+
+    pub fn set_attack_constant(&mut self, value: f64) -> NodeBuilder {
         self.graph_builder
             .internal
             .borrow_mut()
@@ -310,7 +342,7 @@ impl NodeBuilder {
         self.clone()
     }
 
-    pub fn set_decay(&mut self, value: f64) -> NodeBuilder {
+    pub fn set_decay_constant(&mut self, value: f64) -> NodeBuilder {
         self.graph_builder
             .internal
             .borrow_mut()
@@ -318,7 +350,7 @@ impl NodeBuilder {
         self.clone()
     }
 
-    pub fn set_sustain(&mut self, value: f64) -> NodeBuilder {
+    pub fn set_sustain_constant(&mut self, value: f64) -> NodeBuilder {
         self.graph_builder
             .internal
             .borrow_mut()
@@ -326,7 +358,7 @@ impl NodeBuilder {
         self.clone()
     }
 
-    pub fn set_release(&mut self, value: f64) -> NodeBuilder {
+    pub fn set_release_constant(&mut self, value: f64) -> NodeBuilder {
         self.graph_builder
             .internal
             .borrow_mut()
@@ -681,8 +713,8 @@ mod tests {
         let mut graph_builder = AudioGraphBuilder::new();
         let sine = graph_builder.sin();
         let mut gain = graph_builder.gain();
-        gain.set_volume(0.5);
-        gain.set_input(sine);
+        gain.set_volume_constant(0.5);
+        gain.set_input_node(sine);
         graph_builder.set_out(gain);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(4);
@@ -695,11 +727,11 @@ mod tests {
     #[test]
     fn can_mix_signals() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let sine = graph_builder.sin().set_freq(1.0);
-        let sine2 = graph_builder.sin().set_freq(2.0);
+        let sine = graph_builder.sin().set_freq_constant(1.0);
+        let sine2 = graph_builder.sin().set_freq_constant(2.0);
         let mut mix = graph_builder.mix();
-        mix.set_input(sine);
-        mix.set_input(sine2);
+        mix.set_input_node(sine);
+        mix.set_input_node(sine2);
 
         graph_builder.set_out(mix);
         let mut graph = graph_builder.extract_graph();
@@ -714,12 +746,12 @@ mod tests {
     #[test]
     fn can_evaluate_nodes_in_topological_order() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let sine = graph_builder.sin().set_freq(1.0);
+        let sine = graph_builder.sin().set_freq_constant(1.0);
         let mut mix = graph_builder.mix();
-        let mut gain = graph_builder.gain().set_volume(0.5);
-        mix.set_input(sine.clone());
-        gain.set_input(sine);
-        mix.set_input(gain);
+        let mut gain = graph_builder.gain().set_volume_constant(0.5);
+        mix.set_input_node(sine.clone());
+        gain.set_input_node(sine);
+        mix.set_input_node(gain);
         graph_builder.set_out(mix);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(4);
@@ -733,9 +765,9 @@ mod tests {
     #[test]
     fn can_run_a_delay_node() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let sine = graph_builder.sin().set_freq(1.0);
-        let mut delay = graph_builder.delay().set_delay(0.25);
-        delay.set_input(sine);
+        let sine = graph_builder.sin().set_freq_constant(1.0);
+        let mut delay = graph_builder.delay().set_delay_constant(0.25);
+        delay.set_input_node(sine);
         graph_builder.set_out(delay);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(4);
@@ -747,13 +779,13 @@ mod tests {
     #[test]
     fn can_run_a_queue_of_delay_nodes() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let pulse = graph_builder.square().set_freq(0.5);
-        let mut delay = graph_builder.delay().set_delay(1.0);
-        let mut delay1 = graph_builder.delay().set_delay(1.0);
-        let mut delay2 = graph_builder.delay().set_delay(1.0);
-        delay.set_input(pulse);
-        delay1.set_input(delay);
-        delay2.set_input(delay1);
+        let pulse = graph_builder.square().set_freq_constant(0.5);
+        let mut delay = graph_builder.delay().set_delay_constant(1.0);
+        let mut delay1 = graph_builder.delay().set_delay_constant(1.0);
+        let mut delay2 = graph_builder.delay().set_delay_constant(1.0);
+        delay.set_input_node(pulse);
+        delay1.set_input_node(delay);
+        delay2.set_input_node(delay1);
         graph_builder.set_out(delay2);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(1);
@@ -768,13 +800,13 @@ mod tests {
     #[test]
     fn can_run_a_queue_of_delay_nodes_constructed_out_of_order() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let pulse = graph_builder.square().set_freq(0.5);
-        let mut delay2 = graph_builder.delay().set_delay(1.0);
-        let mut delay1 = graph_builder.delay().set_delay(1.0);
-        let mut delay = graph_builder.delay().set_delay(1.0);
-        delay.set_input(pulse);
-        delay1.set_input(delay);
-        delay2.set_input(delay1);
+        let pulse = graph_builder.square().set_freq_constant(0.5);
+        let mut delay2 = graph_builder.delay().set_delay_constant(1.0);
+        let mut delay1 = graph_builder.delay().set_delay_constant(1.0);
+        let mut delay = graph_builder.delay().set_delay_constant(1.0);
+        delay.set_input_node(pulse);
+        delay1.set_input_node(delay);
+        delay2.set_input_node(delay1);
         graph_builder.set_out(delay2);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(1);
@@ -789,11 +821,11 @@ mod tests {
     #[test]
     fn can_run_a_delay_to_mix_graph() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let pulse = graph_builder.square().set_freq(0.5);
-        let mut delay = graph_builder.delay().set_delay(1.0);
+        let pulse = graph_builder.square().set_freq_constant(0.5);
+        let mut delay = graph_builder.delay().set_delay_constant(1.0);
         let mut mix = graph_builder.mix();
-        delay.set_input(pulse);
-        mix.set_input(delay);
+        delay.set_input_node(pulse);
+        mix.set_input_node(delay);
         graph_builder.set_out(mix);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(1);
@@ -805,13 +837,13 @@ mod tests {
     #[test]
     fn can_run_a_delay_gain_graph() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let pulse = graph_builder.square().set_freq(0.5);
-        let mut delay = graph_builder.delay().set_delay(4.0);
-        let mut gain = graph_builder.gain().set_volume(0.5);
+        let pulse = graph_builder.square().set_freq_constant(0.5);
+        let mut delay = graph_builder.delay().set_delay_constant(4.0);
+        let mut gain = graph_builder.gain().set_volume_constant(0.5);
         let mut mix = graph_builder.mix();
-        delay.set_input(pulse);
-        gain.set_input(delay);
-        mix.set_input(gain);
+        delay.set_input_node(pulse);
+        gain.set_input_node(delay);
+        mix.set_input_node(gain);
         graph_builder.set_out(mix);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(1);
@@ -826,14 +858,14 @@ mod tests {
     #[test]
     fn can_run_a_delay_gain_loop() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let pulse = graph_builder.square().set_freq(0.5);
-        let mut delay = graph_builder.delay().set_delay(1.0);
-        let mut gain = graph_builder.gain().set_volume(0.5);
+        let pulse = graph_builder.square().set_freq_constant(0.5);
+        let mut delay = graph_builder.delay().set_delay_constant(1.0);
+        let mut gain = graph_builder.gain().set_volume_constant(0.5);
         let mut mix = graph_builder.mix();
-        mix.set_input(pulse);
-        delay.set_input(mix.clone());
-        gain.set_input(delay);
-        mix.set_input(gain);
+        mix.set_input_node(pulse);
+        delay.set_input_node(mix.clone());
+        gain.set_input_node(delay);
+        mix.set_input_node(gain);
         graph_builder.set_out(mix);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(1);
@@ -847,7 +879,7 @@ mod tests {
     #[test]
     fn delay_can_have_disconnected_input() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let delay = graph_builder.delay().set_delay(1.0);
+        let delay = graph_builder.delay().set_delay_constant(1.0);
         graph_builder.set_out(delay);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(1);
@@ -858,7 +890,7 @@ mod tests {
     #[test]
     fn ssquare_freq_can_be_zero() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let o = graph_builder.square().set_freq(0.0);
+        let o = graph_builder.square().set_freq_constant(0.0);
         graph_builder.set_out(o);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(1);
@@ -869,7 +901,7 @@ mod tests {
     #[test]
     fn triangle_freq_can_be_zero() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let o = graph_builder.triangle().set_freq(0.0);
+        let o = graph_builder.triangle().set_freq_constant(0.0);
         graph_builder.set_out(o);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(1);
@@ -880,13 +912,31 @@ mod tests {
     #[test]
     fn delay_can_be_zero() {
         let mut graph_builder = AudioGraphBuilder::new();
-        let o = graph_builder.square().set_freq(0.5);
-        let mut delay = graph_builder.delay().set_delay(0.0);
-        delay.set_input(o);
+        let o = graph_builder.square().set_freq_constant(0.5);
+        let mut delay = graph_builder.delay().set_delay_constant(0.0);
+        delay.set_input_node(o);
         graph_builder.set_out(delay);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(1);
         assert_eq!(graph.gen_next_sample(), 1.0);
         assert_eq!(graph.gen_next_sample(), -1.0);
+    }
+
+    #[test]
+    fn can_connect_node_to_volume() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let o = graph_builder.square().set_freq_constant(0.5);
+        let o1 = graph_builder.square().set_freq_constant(0.5);
+        let mut gain = graph_builder.gain().set_volume_node(o);
+        gain.set_input_node(o1);
+        graph_builder.set_out(gain);
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(1);
+
+        // negative value will be multiplied by negative volume
+        assert_eq!(graph.gen_next_sample(), 1.0);
+        assert_eq!(graph.gen_next_sample(), 1.0);
+        assert_eq!(graph.gen_next_sample(), 1.0);
+        assert_eq!(graph.gen_next_sample(), 1.0);
     }
 }

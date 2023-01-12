@@ -18,23 +18,35 @@ pub fn build_audio_script_engine() -> Engine {
         .register_fn("mix", AudioGraphBuilder::mix)
         .register_fn("set_out", AudioGraphBuilder::set_out)
         .register_type_with_name::<NodeBuilder>("NodeBuilder")
-        .register_fn("input", NodeBuilder::set_input)
-        .register_fn("freq", NodeBuilder::set_freq)
-        .register_fn("volume", NodeBuilder::set_volume)
-        .register_fn("delay", NodeBuilder::set_delay)
-        .register_fn("attack", NodeBuilder::set_attack)
-        .register_fn("decay", NodeBuilder::set_decay)
-        .register_fn("sustain", NodeBuilder::set_sustain)
-        .register_fn("release", NodeBuilder::set_release)
+        .register_fn("input", NodeBuilder::set_input_constant)
+        .register_fn("input", NodeBuilder::set_input_node)
+        .register_fn("freq", NodeBuilder::set_freq_constant)
+        .register_fn("freq", NodeBuilder::set_freq_node)
+        .register_fn("volume", NodeBuilder::set_volume_constant)
+        .register_fn("volume", NodeBuilder::set_volume_node)
+        .register_fn("delay", NodeBuilder::set_delay_constant)
+        .register_fn("delay", NodeBuilder::set_delay_node)
+        .register_fn("attack", NodeBuilder::set_attack_constant)
+        .register_fn("decay", NodeBuilder::set_decay_constant)
+        .register_fn("sustain", NodeBuilder::set_sustain_constant)
+        .register_fn("release", NodeBuilder::set_release_constant)
         .register_custom_operator("->", 160)
         .unwrap()
         .register_fn("->", |l: NodeBuilder, mut r: NodeBuilder| {
-            r.set_input(l);
+            r.set_input_node(l);
+            r
+        })
+        .register_fn("->", |l: f64, mut r: NodeBuilder| {
+            r.set_input_constant(l);
             r
         })
         .register_fn("+", |mut l: NodeBuilder, r: NodeBuilder| {
             let mut g = l.get_graph();
-            g.mix().set_input(l).set_input(r)
+            g.mix().set_input_node(l).set_input_node(r)
+        })
+        .register_fn("+", |mut l: NodeBuilder, r: f64| {
+            let mut g = l.get_graph();
+            g.mix().set_input_node(l).set_input_constant(r)
         });
     engine
 }
