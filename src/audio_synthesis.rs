@@ -1,16 +1,15 @@
 use rand::{thread_rng, Rng};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::collections::VecDeque;
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum InputSlotEnum {
-    Input,
+pub enum NamedInputEnum {
     Freq,
     Delay,
     Attack,
@@ -22,23 +21,26 @@ pub enum InputSlotEnum {
 pub struct Context<'a> {
     time: f32,
     sample_rate: i32,
-    input_nodes: &'a Vec<i32>,
-    input_slots: &'a HashMap<InputSlotEnum, NodeParamInput>,
+    inputs: &'a Vec<NodeParamInput>,
+    named_inputs: &'a HashMap<NamedInputEnum, NodeParamInput>,
     outputs: &'a Vec<f32>,
 }
 
 impl Context<'_> {
-    fn read_input(&self, slot: InputSlotEnum) -> Option<f32> {
-        let input = self.input_slots.get(&slot).copied();
-        let value = match input {
+    fn read_named_input(&self, slot: NamedInputEnum) -> Option<f32> {
+        self.handle_slot(self.named_inputs.get(&slot).copied())
+    }
+
+    fn read_input(&self, index: i32) -> Option<f32> {
+        self.handle_slot(self.inputs.get(index as usize).cloned())
+    }
+
+    fn handle_slot(&self, input: Option<NodeParamInput>) -> Option<f32> {
+        match input {
             None => None,
-            Some(NodeParamInput::Node(_id)) => {
-                // TODO: read from node output
-                None
-            }
+            Some(NodeParamInput::Node(id)) => self.outputs.get(id as usize).cloned(),
             Some(NodeParamInput::Constant(value)) => Some(value),
-        };
-        value
+        }
     }
 }
 
@@ -65,7 +67,9 @@ pub struct SineOscillator {}
 
 impl NodeBehaviour for SineOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
-        let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
+        let freq = context
+            .read_named_input(NamedInputEnum::Freq)
+            .unwrap_or(1000.0);
         (context.time * freq * 2.0 * std::f32::consts::PI).sin()
     }
 }
@@ -74,7 +78,9 @@ pub struct SquareOscillator {}
 
 impl NodeBehaviour for SquareOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
-        let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
+        let freq = context
+            .read_named_input(NamedInputEnum::Freq)
+            .unwrap_or(1000.0);
         let cycle = 1.0 / freq;
         if context.time.rem_euclid(cycle) < cycle * 0.5 {
             1.0
@@ -88,7 +94,9 @@ pub struct SawtoothOscillator {}
 
 impl NodeBehaviour for SawtoothOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
-        let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
+        let freq = context
+            .read_named_input(NamedInputEnum::Freq)
+            .unwrap_or(1000.0);
         let cycle = 1.0 / freq;
         lerp(-1.0, 1.0, context.time.rem_euclid(cycle) / cycle)
     }
@@ -98,7 +106,9 @@ pub struct TriangleOscillator {}
 
 impl NodeBehaviour for TriangleOscillator {
     fn gen_next_sample(&self, context: Context) -> f32 {
-        let freq = context.read_input(InputSlotEnum::Freq).unwrap_or(1000.0);
+        let freq = context
+            .read_named_input(NamedInputEnum::Freq)
+            .unwrap_or(1000.0);
         if freq == 0.0 {
             return -1.0;
         }
@@ -121,12 +131,11 @@ pub struct Gain {}
 
 impl NodeBehaviour for Gain {
     fn gen_next_sample(&self, context: Context) -> f32 {
-        if context.input_nodes.is_empty() {
-            return 0.0;
-        }
-        let input_node = context.input_nodes[0];
-        let input_sample = context.outputs[input_node as usize];
-        input_sample * context.read_input(InputSlotEnum::Volume).unwrap_or(1.0)
+        let input_sample = context.read_input(0).unwrap_or(0.0);
+        input_sample
+            * context
+                .read_named_input(NamedInputEnum::Volume)
+                .unwrap_or(1.0)
     }
 }
 
@@ -134,15 +143,19 @@ pub struct ADSR {}
 
 impl NodeBehaviour for ADSR {
     fn gen_next_sample(&self, context: Context) -> f32 {
-        if context.input_nodes.is_empty() {
-            return 0.0;
-        }
-        let input_node = context.input_nodes[0];
-        let input_sample = context.outputs[input_node as usize];
-        let attack = context.read_input(InputSlotEnum::Attack).unwrap_or(1.0);
-        let decay = context.read_input(InputSlotEnum::Decay).unwrap_or(0.0);
-        let release = context.read_input(InputSlotEnum::Release).unwrap_or(0.0);
-        let sustain = context.read_input(InputSlotEnum::Sustain).unwrap_or(0.0);
+        let input_sample = context.read_input(0).unwrap_or(0.0);
+        let attack = context
+            .read_named_input(NamedInputEnum::Attack)
+            .unwrap_or(1.0);
+        let decay = context
+            .read_named_input(NamedInputEnum::Decay)
+            .unwrap_or(0.0);
+        let release = context
+            .read_named_input(NamedInputEnum::Release)
+            .unwrap_or(0.0);
+        let sustain = context
+            .read_named_input(NamedInputEnum::Sustain)
+            .unwrap_or(0.0);
         let total_duration = attack + decay + release;
         let t = context.time.rem_euclid(total_duration);
 
@@ -162,8 +175,10 @@ pub struct Add {}
 impl NodeBehaviour for Add {
     fn gen_next_sample(&self, context: Context) -> f32 {
         let mut acc = 0.0;
-        for input_node in context.input_nodes {
-            acc += context.outputs[*input_node as usize];
+        let mut index = 0;
+        while let Some(input) = context.read_input(index) {
+            acc += input;
+            index += 1;
         }
         acc
     }
@@ -183,16 +198,13 @@ impl Delay {
 
 impl NodeBehaviour for Delay {
     fn gen_next_sample(&self, context: Context) -> f32 {
-        let delay_samples = (context.read_input(InputSlotEnum::Delay).unwrap_or(1.0)
+        let delay_samples = (context
+            .read_named_input(NamedInputEnum::Delay)
+            .unwrap_or(1.0)
             * (context.sample_rate as f32)) as i32;
 
         if delay_samples <= 0 {
-            if context.input_nodes.is_empty() {
-                return 0.0;
-            }
-            let input_node = context.input_nodes[0];
-            let input_sample = context.outputs[input_node as usize];
-            return input_sample;
+            return context.read_input(0).unwrap_or(0.0);
         }
 
         if self.buffered_samples.len() >= delay_samples as usize {
@@ -202,24 +214,23 @@ impl NodeBehaviour for Delay {
     }
 
     fn process_outputs(&mut self, context: Context) {
-        let delay_samples = (context.read_input(InputSlotEnum::Delay).unwrap_or(1.0)
+        let delay_samples = (context
+            .read_named_input(NamedInputEnum::Delay)
+            .unwrap_or(1.0)
             * (context.sample_rate as f32)) as i32;
 
         if self.buffered_samples.len() >= delay_samples as usize {
             self.buffered_samples.pop_front();
         }
 
-        if context.input_nodes.is_empty() {
-            self.buffered_samples.push_back(0.0);
-            return;
-        }
-        let input_node = context.input_nodes[0];
-        let input_sample = context.outputs[input_node as usize];
-        self.buffered_samples.push_back(input_sample);
+        self.buffered_samples
+            .push_back(context.read_input(0).unwrap_or(0.0));
     }
 
     fn is_phantom_input(&self, context: Context) -> bool {
-        let delay_samples = (context.read_input(InputSlotEnum::Delay).unwrap_or(1.0)
+        let delay_samples = (context
+            .read_named_input(NamedInputEnum::Delay)
+            .unwrap_or(1.0)
             * (context.sample_rate as f32)) as usize;
 
         if delay_samples <= 0 {
@@ -245,8 +256,8 @@ enum NodeParamInput {
 pub struct AudioGraph {
     next_id: i32,
     nodes: Vec<Node>,
-    node_input_nodes: Vec<Vec<i32>>,
-    node_input_slots: Vec<HashMap<InputSlotEnum, NodeParamInput>>,
+    node_input_nodes: Vec<Vec<NodeParamInput>>,
+    node_input_slots: Vec<HashMap<NamedInputEnum, NodeParamInput>>,
     sample_rate: i32,
     current_sample: i32,
     out_node: Option<i32>,
@@ -263,70 +274,63 @@ impl NodeBuilder {
         self.graph_builder
             .internal
             .borrow_mut()
-            .link_node(self.id, InputSlotEnum::Input, node.id);
+            .link_node(self.id, node.id);
         self.clone()
     }
 
     pub fn set_freq(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(
-            self.id,
-            InputSlotEnum::Freq,
-            value,
-        );
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Freq, value);
         self.clone()
     }
 
     pub fn set_volume(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(
-            self.id,
-            InputSlotEnum::Volume,
-            value,
-        );
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Volume, value);
         self.clone()
     }
 
     pub fn set_delay(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(
-            self.id,
-            InputSlotEnum::Delay,
-            value,
-        );
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Delay, value);
         self.clone()
     }
 
     pub fn set_attack(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(
-            self.id,
-            InputSlotEnum::Attack,
-            value,
-        );
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Attack, value);
         self.clone()
     }
 
     pub fn set_decay(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(
-            self.id,
-            InputSlotEnum::Decay,
-            value,
-        );
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Decay, value);
         self.clone()
     }
 
     pub fn set_sustain(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(
-            self.id,
-            InputSlotEnum::Sustain,
-            value,
-        );
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Sustain, value);
         self.clone()
     }
 
     pub fn set_release(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_constant_f64(
-            self.id,
-            InputSlotEnum::Release,
-            value,
-        );
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Release, value);
         self.clone()
     }
 
@@ -485,18 +489,23 @@ impl AudioGraph {
         self.out_node = Some(sink);
     }
 
-    pub fn link_node(&mut self, node_to: i32, slot: InputSlotEnum, node_from: i32) {
-        match slot {
-            InputSlotEnum::Input => self.node_input_nodes[node_to as usize].push(node_from),
-            other => self.node_input_slots[node_to as usize]
-                .insert(other, NodeParamInput::Node(node_from))
-                .map_or((), |_| ()),
-        }
+    pub fn link_named_node(&mut self, node_to: i32, slot: NamedInputEnum, node_from: i32) {
+        self.node_input_slots[node_to as usize]
+            .insert(slot, NodeParamInput::Node(node_from))
+            .map_or((), |_| ());
     }
 
-    pub fn link_constant_f64(&mut self, node_to: i32, slot: InputSlotEnum, value: f64) {
+    pub fn link_node(&mut self, node_to: i32, node_from: i32) {
+        self.node_input_nodes[node_to as usize].push(NodeParamInput::Node(node_from));
+    }
+
+    pub fn link_named_constant_f64(&mut self, node_to: i32, slot: NamedInputEnum, value: f64) {
         self.node_input_slots[node_to as usize]
             .insert(slot, NodeParamInput::Constant(value as f32));
+    }
+
+    pub fn link_constant_f64(&mut self, node_to: i32, value: f64) {
+        self.node_input_nodes[node_to as usize].push(NodeParamInput::Constant(value as f32));
     }
 
     pub fn set_sample_rate(&mut self, num: i32) {
@@ -524,29 +533,60 @@ impl AudioGraph {
 
         self.current_sample += 1;
         let time = self.current_sample as f32 / self.sample_rate as f32;
+        // first pass
         for node in &self.nodes {
-            for input_node_index in &self.node_input_nodes[node.id as usize] {
-                //
-                let context = Context {
-                    time: time,
-                    sample_rate: self.sample_rate,
-                    outputs: &outputs,
-                    input_nodes: &self.node_input_nodes[*input_node_index as usize],
-                    input_slots: &self.node_input_slots[*input_node_index as usize],
-                };
+            // figure out the dependency graph
+            for indexed_input in &self.node_input_nodes[node.id as usize] {
+                if let NodeParamInput::Node(input_node_index) = indexed_input {
+                    //
+                    let context = Context {
+                        time: time,
+                        sample_rate: self.sample_rate,
+                        outputs: &outputs,
+                        inputs: &self.node_input_nodes[*input_node_index as usize],
+                        named_inputs: &self.node_input_slots[*input_node_index as usize],
+                    };
 
-                if !self.nodes[*input_node_index as usize]
-                    .behaviour
-                    .borrow()
-                    .is_phantom_input(context)
-                {
-                    node_outputs[*input_node_index as usize].push(node.id);
-                    node_input_count[node.id as usize] += 1;
-                } else {
-                    // we don't treat the delay node as input node, but we
-                    // make a "phantom" input node with 0 inputs, that we process before the topo
-                    // ordered processing
-                    phantom_delay_nodes.insert(*input_node_index);
+                    if !self.nodes[*input_node_index as usize]
+                        .behaviour
+                        .borrow()
+                        .is_phantom_input(context)
+                    {
+                        node_outputs[*input_node_index as usize].push(node.id);
+                        node_input_count[node.id as usize] += 1;
+                    } else {
+                        // we don't treat the delay node as input node, but we
+                        // make a "phantom" input node with 0 inputs, that we process before the topo
+                        // ordered processing
+                        phantom_delay_nodes.insert(*input_node_index);
+                    }
+                }
+            }
+
+            for named_input in &self.node_input_slots[node.id as usize] {
+                if let NodeParamInput::Node(input_node_index) = named_input.1 {
+                    //
+                    let context = Context {
+                        time: time,
+                        sample_rate: self.sample_rate,
+                        outputs: &outputs,
+                        inputs: &self.node_input_nodes[*input_node_index as usize],
+                        named_inputs: &self.node_input_slots[*input_node_index as usize],
+                    };
+
+                    if !self.nodes[*input_node_index as usize]
+                        .behaviour
+                        .borrow()
+                        .is_phantom_input(context)
+                    {
+                        node_outputs[*input_node_index as usize].push(node.id);
+                        node_input_count[node.id as usize] += 1;
+                    } else {
+                        // we don't treat the delay node as input node, but we
+                        // make a "phantom" input node with 0 inputs, that we process before the topo
+                        // ordered processing
+                        phantom_delay_nodes.insert(*input_node_index);
+                    }
                 }
             }
 
@@ -570,13 +610,14 @@ impl AudioGraph {
             }
         }
 
+        // phantom nodes have no inputs, so they can be safely processed before the regular nodes
         for v in &phantom_delay_nodes {
             let context = Context {
                 time: time,
                 sample_rate: self.sample_rate,
                 outputs: &outputs,
-                input_nodes: &self.node_input_nodes[*v as usize],
-                input_slots: &self.node_input_slots[*v as usize],
+                inputs: &self.node_input_nodes[*v as usize],
+                named_inputs: &self.node_input_slots[*v as usize],
             };
 
             let sample = self.nodes[*v as usize]
@@ -591,8 +632,8 @@ impl AudioGraph {
                 time: time,
                 sample_rate: self.sample_rate,
                 outputs: &outputs,
-                input_nodes: &self.node_input_nodes[*v as usize],
-                input_slots: &self.node_input_slots[*v as usize],
+                inputs: &self.node_input_nodes[*v as usize],
+                named_inputs: &self.node_input_slots[*v as usize],
             };
 
             if !phantom_delay_nodes.contains(v) {
@@ -609,8 +650,8 @@ impl AudioGraph {
                 time: time,
                 sample_rate: self.sample_rate,
                 outputs: &outputs,
-                input_nodes: &self.node_input_nodes[v as usize],
-                input_slots: &self.node_input_slots[v as usize],
+                inputs: &self.node_input_nodes[v as usize],
+                named_inputs: &self.node_input_slots[v as usize],
             };
             self.nodes[v as usize]
                 .behaviour
