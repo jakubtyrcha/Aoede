@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::iter;
 use std::num::NonZeroU32;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
@@ -21,10 +20,12 @@ use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
 use notify::RecursiveMode;
 use notify::Watcher;
+use realfft::RealToComplex;
 use wgpu::util::DeviceExt;
 use wgpu::{ImageCopyTexture, Origin3d};
 use winit::event::Event::*;
 use winit::event_loop::ControlFlow;
+use realfft::RealFftPlanner;
 
 const INITIAL_WIDTH: u32 = 1920;
 const INITIAL_HEIGHT: u32 = 1080;
@@ -57,6 +58,9 @@ struct MyApp {
     picked_path: Option<std::path::PathBuf>,
     engine: Engine,
     error: Option<Box<rhai::EvalAltResult>>,
+    fft: Arc<dyn RealToComplex<f32>>,
+    indata: Vec<f32>,
+    spectrum: Vec<realfft::num_complex::Complex<f32>>
 }
 
 struct AudioSampleReader {
@@ -102,6 +106,11 @@ impl Default for MyApp {
                 .cloned(),
         );
 
+        let mut real_planner = RealFftPlanner::<f32>::new();
+        let r2c = real_planner.plan_fft_forward(4096);
+        let mut indata = r2c.make_input_vec();
+        let mut spectrum = r2c.make_output_vec();
+
         let mut result = MyApp {
             stream: stream_setup_for(
                 &device,
@@ -117,6 +126,9 @@ impl Default for MyApp {
             picked_path: None,
             engine,
             error: None,
+            fft: r2c,
+            indata, 
+            spectrum
         };
         result.precompute_samples(0);
         result.stream.play().unwrap();
@@ -177,8 +189,13 @@ impl MyApp {
             }
 
             let data_clone = self.samples.clone();
-
             let sample_rate = 48000;
+
+            for i in 0..4096 {
+                self.indata[4096 - 1 - i] = self.samples[(self.write_index + self.samples.len() - i) % self.samples.len()];
+            }
+
+            self.fft.process(&mut self.indata, &mut self.spectrum).unwrap();
 
             let points = plot::PlotPoints::from_explicit_callback(
                 move |x: f64| {
@@ -196,9 +213,15 @@ impl MyApp {
                 1000,
             );
 
-            plot::Plot::new("Audio plot")
-                .data_aspect(1.0)
-                .show(ui, |plot_ui| plot_ui.line(plot::Line::new(points)));
+            // plot::Plot::new("Audio plot")
+            //     .data_aspect(1.0)
+            //     .show(ui, |plot_ui| plot_ui.line(plot::Line::new(points)));
+
+            let spectrum = plot::PlotPoints::from_iter(self.spectrum.iter().enumerate().map(|(i, c)| [i as f64 / 1000.0, c.re as f64]));
+
+            plot::Plot::new("Spectrum plot")
+                .view_aspect(2.0)
+                .show(ui, |plot_ui| plot_ui.line(plot::Line::new(spectrum)));
         });
     }
 }
