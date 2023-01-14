@@ -1,8 +1,9 @@
 use std::borrow::Cow;
+use std::f32::consts;
 use std::iter;
 use std::num::NonZeroU32;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Instant;
 
 use audio_script::build_audio_script_engine;
@@ -20,12 +21,14 @@ use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
 use notify::RecursiveMode;
 use notify::Watcher;
+use realfft::ComplexToReal;
+use realfft::RealFftPlanner;
 use realfft::RealToComplex;
+use realfft::num_complex::ComplexFloat;
 use wgpu::util::DeviceExt;
 use wgpu::{ImageCopyTexture, Origin3d};
 use winit::event::Event::*;
 use winit::event_loop::ControlFlow;
-use realfft::RealFftPlanner;
 
 const INITIAL_WIDTH: u32 = 1920;
 const INITIAL_HEIGHT: u32 = 1080;
@@ -60,7 +63,9 @@ struct MyApp {
     error: Option<Box<rhai::EvalAltResult>>,
     fft: Arc<dyn RealToComplex<f32>>,
     indata: Vec<f32>,
-    spectrum: Vec<realfft::num_complex::Complex<f32>>
+    spectrum: Vec<realfft::num_complex::Complex<f32>>,
+    invfft: Arc<dyn ComplexToReal<f32>>,
+    invdata: Vec<f32>,
 }
 
 struct AudioSampleReader {
@@ -89,6 +94,12 @@ impl MyApp {
     }
 }
 
+fn hamming(i: f32, n: f32) -> f32 {
+    0.53836 - 0.46164 * ((2.0 * std::f32::consts::PI * i) / (n - 1.0)).cos()
+}
+
+const FFT_SIZE : usize = 4096;
+
 impl Default for MyApp {
     fn default() -> Self {
         let (_host, device, config) = audio_setup::host_device_setup().unwrap();
@@ -107,9 +118,11 @@ impl Default for MyApp {
         );
 
         let mut real_planner = RealFftPlanner::<f32>::new();
-        let r2c = real_planner.plan_fft_forward(4096);
+        let r2c = real_planner.plan_fft_forward(FFT_SIZE);
         let mut indata = r2c.make_input_vec();
         let mut spectrum = r2c.make_output_vec();
+        let c2r = real_planner.plan_fft_inverse(FFT_SIZE);
+        let invdata = c2r.make_output_vec();
 
         let mut result = MyApp {
             stream: stream_setup_for(
@@ -127,8 +140,10 @@ impl Default for MyApp {
             engine,
             error: None,
             fft: r2c,
-            indata, 
-            spectrum
+            indata,
+            spectrum,
+            invfft: c2r,
+            invdata
         };
         result.precompute_samples(0);
         result.stream.play().unwrap();
@@ -152,6 +167,8 @@ impl MyApp {
     }
 
     pub fn ui(&mut self, ctx: &Context, watcher: &mut dyn Watcher, recompile: &Arc<AtomicBool>) {
+        let sample_rate = 48000;
+
         egui::Window::new("Aoede").show(ctx, |ui| {
             if ui.button("Open file…").clicked() {
                 if let Some(path) = rfd::FileDialog::new().pick_file() {
@@ -189,13 +206,22 @@ impl MyApp {
             }
 
             let data_clone = self.samples.clone();
-            let sample_rate = 48000;
 
-            for i in 0..4096 {
-                self.indata[4096 - 1 - i] = self.samples[(self.write_index + self.samples.len() - i) % self.samples.len()];
+            for i in 0..FFT_SIZE {
+                self.indata[i] =
+                    self.samples[(self.write_index + self.samples.len() - FFT_SIZE + i) % self.samples.len()] * hamming(i as f32, FFT_SIZE as f32);
             }
 
-            self.fft.process(&mut self.indata, &mut self.spectrum).unwrap();
+            self.fft
+                .process(&mut self.indata, &mut self.spectrum)
+                .unwrap();
+
+            for i in 0..self.spectrum.len() {
+                // this makes the magnitude change with resolution size
+                // TODO: correct normalisation...
+                //self.spectrum[i] *= 1.0 / (FFT_SIZE as f32).sqrt();
+                self.spectrum[i] *= 1.0 / (FFT_SIZE as f32);
+            }
 
             let points = plot::PlotPoints::from_explicit_callback(
                 move |x: f64| {
@@ -213,15 +239,56 @@ impl MyApp {
                 1000,
             );
 
-            // plot::Plot::new("Audio plot")
-            //     .data_aspect(1.0)
-            //     .show(ui, |plot_ui| plot_ui.line(plot::Line::new(points)));
+            plot::Plot::new("Audio plot")
+                .data_aspect(1.0)
+                .show(ui, |plot_ui| plot_ui.line(plot::Line::new(points)));
+        });
 
-            let spectrum = plot::PlotPoints::from_iter(self.spectrum.iter().enumerate().map(|(i, c)| [i as f64 / 1000.0, c.re as f64]));
+        egui::Window::new("Spectrum").show(ctx, |ui| {
+
+            let spectrum = plot::PlotPoints::from_iter(
+                self.spectrum
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| [(i as f32 * 48000.0 / FFT_SIZE as f32) as f64, (c).abs() as f64]),
+            );
 
             plot::Plot::new("Spectrum plot")
                 .view_aspect(2.0)
                 .show(ui, |plot_ui| plot_ui.line(plot::Line::new(spectrum)));
+
+            // self.invfft.process(&mut self.spectrum, &mut self.invdata);
+
+            // for i in 0..self.indata.len() {
+            //     self.invdata[i] *= 1.0 / 1024.0_f32.sqrt();
+            // }
+
+            // let mut data_clone = Vec::new();
+            // data_clone.resize(self.samples.len(), 0.0);
+
+            // for i in 0..1024 {
+            //     data_clone[(self.write_index + self.samples.len() - 1024 + i) % self.samples.len()] = self.invdata[i];
+            // }
+
+            // let points = plot::PlotPoints::from_explicit_callback(
+            //     move |x: f64| {
+            //         let index = if x >= 0.0 {
+            //             (x * sample_rate as f64) as usize
+            //         } else {
+            //             0
+            //         };
+            //         if index < data_clone.len() {
+            //             return data_clone[index] as f64;
+            //         }
+            //         0.0
+            //     },
+            //     std::f64::NEG_INFINITY..std::f64::INFINITY,
+            //     1000,
+            // );
+
+            // plot::Plot::new("Audio plot 1")
+            //     .data_aspect(1.0)
+            //     .show(ui, |plot_ui| plot_ui.line(plot::Line::new(points)));
         });
     }
 }
@@ -303,13 +370,16 @@ fn main() {
     let mut app: MyApp = MyApp::default();
     let recompile = Arc::new(AtomicBool::new(false));
     let watcher_recompile = recompile.clone();
-    let mut watcher = notify::recommended_watcher(move |res:  Result<notify::Event, notify::Error>| match res {
-        Ok(event) => if event.kind.is_modify() {
-            watcher_recompile.store(true, std::sync::atomic::Ordering::SeqCst);
-        },
-        Err(e) => println!("watch error: {:?}", e),
-    })
-    .unwrap();
+    let mut watcher =
+        notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| match res {
+            Ok(event) => {
+                if event.kind.is_modify() {
+                    watcher_recompile.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            Err(e) => println!("watch error: {:?}", e),
+        })
+        .unwrap();
 
     // Load the shaders from disk
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
