@@ -11,6 +11,10 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+fn hamming_window(i: f32, n: f32) -> f32 {
+    0.53836 - 0.46164 * ((2.0 * std::f32::consts::PI * i) / (n - 1.0)).cos()
+}
+
 const FFT_SIZE: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -247,7 +251,7 @@ impl NodeBehaviour for Delay {
 }
 
 struct BandPassFilter {
-    pub buffered_samples: VecDeque<f32>,
+    buffered_samples: VecDeque<f32>,
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
     input_vec: Rc<RefCell<Vec<f32>>>,
@@ -294,6 +298,10 @@ impl NodeBehaviour for BandPassFilter {
                     break;
                 }
             }
+
+            for i in 0..FFT_SIZE {
+                input_vec[i] *= hamming_window(i as f32, FFT_SIZE as f32);
+            }
         }
 
         self.forward_fft
@@ -321,7 +329,8 @@ impl NodeBehaviour for BandPassFilter {
             .unwrap();
 
         // normalise
-        let sample = self.input_vec.borrow()[FFT_SIZE - 1] * normalise_factor;
+        let sample = self.input_vec.borrow()[FFT_SIZE - 1] * normalise_factor * 1.0
+            / hamming_window((FFT_SIZE - 1) as f32, FFT_SIZE as f32);
         sample
     }
 
@@ -840,8 +849,6 @@ impl AudioGraph {
 
 #[cfg(test)]
 mod tests {
-    use realfft::num_complex::ComplexFloat;
-
     use super::*;
 
     #[test]
