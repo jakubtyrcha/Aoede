@@ -16,6 +16,7 @@ pub fn build_audio_script_engine() -> Engine {
         .register_fn("delay", AudioGraphBuilder::delay)
         .register_fn("adsr", AudioGraphBuilder::adsr)
         .register_fn("mix", AudioGraphBuilder::mix)
+        .register_fn("bandpass", AudioGraphBuilder::bandpass)
         .register_fn("set_out", AudioGraphBuilder::set_out)
         .register_type_with_name::<NodeBuilder>("NodeBuilder")
         .register_fn("input", NodeBuilder::set_input_constant)
@@ -30,6 +31,8 @@ pub fn build_audio_script_engine() -> Engine {
         .register_fn("decay", NodeBuilder::set_decay_constant)
         .register_fn("sustain", NodeBuilder::set_sustain_constant)
         .register_fn("release", NodeBuilder::set_release_constant)
+        .register_fn("cutoff_low", NodeBuilder::set_cutoff_low_constant)
+        .register_fn("cutoff_high", NodeBuilder::set_cutoff_high_constant)
         .register_custom_operator("->", 160)
         .unwrap()
         .register_fn("->", |l: NodeBuilder, mut r: NodeBuilder| {
