@@ -15,7 +15,7 @@ fn hamming_window(i: f32, n: f32) -> f32 {
     0.53836 - 0.46164 * ((2.0 * std::f32::consts::PI * i) / (n - 1.0)).cos()
 }
 
-const FFT_SIZE: usize = 512;
+const DEFAULT_FFT_SIZE: usize = 2048;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum NamedInputEnum {
@@ -26,6 +26,8 @@ pub enum NamedInputEnum {
     Sustain,
     Release,
     Volume,
+    CutoffLow,
+    CutoffHigh,
 }
 pub struct Context<'a> {
     time: f32,
@@ -250,6 +252,14 @@ impl NodeBehaviour for Delay {
     }
 }
 
+struct Dummy {}
+
+impl NodeBehaviour for Dummy {
+    fn gen_next_sample(&self, context: Context) -> f32 {
+        todo!()
+    }
+}
+
 struct BandPassFilter {
     buffered_samples: VecDeque<f32>,
     forward_fft: Arc<dyn RealToComplex<f32>>,
@@ -278,19 +288,20 @@ impl BandPassFilter {
 impl NodeBehaviour for BandPassFilter {
     fn gen_next_sample(&self, context: Context) -> f32 {
         let input_sample = context.read_input(0).unwrap_or(0.0);
+        let fft_size = self.forward_fft.len();
         {
             let mut input_vec = self.input_vec.borrow_mut();
             // TODO: PERF: fill only the indices we won't write to
             input_vec.fill(0.0);
-            input_vec[FFT_SIZE - 1] = input_sample;
-            for i in 0..FFT_SIZE {
+            input_vec[fft_size - 1] = input_sample;
+            for i in 0..fft_size {
                 // TODO: PERF: can we just use the ringbuffer?
 
                 // 0 is front of the queue (the newest sample)
                 if let Some(sample) = self.buffered_samples.get(i) {
-                    let write_index = FFT_SIZE as i32 - 1 - 1 - i as i32;
+                    let write_index = fft_size as i32 - 1 - 1 - i as i32;
                     if write_index >= 0 {
-                        input_vec[FFT_SIZE - 1 - 1 - i] = *sample;
+                        input_vec[fft_size - 1 - 1 - i] = *sample;
                     } else {
                         break;
                     }
@@ -299,8 +310,8 @@ impl NodeBehaviour for BandPassFilter {
                 }
             }
 
-            for i in 0..FFT_SIZE {
-                input_vec[i] *= hamming_window(i as f32, FFT_SIZE as f32);
+            for i in 0..fft_size {
+                input_vec[i] *= hamming_window(i as f32, fft_size as f32);
             }
         }
 
@@ -311,12 +322,35 @@ impl NodeBehaviour for BandPassFilter {
             )
             .unwrap();
 
-        let normalise_factor = 1.0 / (FFT_SIZE as f32).sqrt();
+        let cutoff_low_fq = context
+            .read_named_input(NamedInputEnum::CutoffLow)
+            .unwrap_or(0.0);
+        let cutoff_high_fq = context
+            .read_named_input(NamedInputEnum::CutoffHigh)
+            .unwrap_or(20000.0);
+        let normalise_factor = 1.0 / (fft_size as f32).sqrt();
         {
             let mut output = self.output_vec.borrow_mut();
             let n = output.len();
+            let cutoff_low_bucket =
+                (cutoff_low_fq / (context.sample_rate as f32 / fft_size as f32)).floor() as usize;
+            let cutoff_high_bucket =
+                (cutoff_high_fq / (context.sample_rate as f32 / fft_size as f32)).floor() as usize;
             for i in 0..n {
-                output[i] *= normalise_factor;
+                let mask = if cutoff_low_bucket < cutoff_high_bucket {
+                    if cutoff_low_bucket <= i && i <= cutoff_high_bucket {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    if cutoff_low_bucket <= i || i <= cutoff_high_bucket {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                };
+                output[i] *= normalise_factor * mask;
             }
         }
 
@@ -328,14 +362,15 @@ impl NodeBehaviour for BandPassFilter {
             )
             .unwrap();
 
-        // normalise
-        let sample = self.input_vec.borrow()[FFT_SIZE - 1] * normalise_factor * 1.0
-            / hamming_window((FFT_SIZE - 1) as f32, FFT_SIZE as f32);
+        let index = fft_size / 2;
+        let sample = self.input_vec.borrow()[index] * normalise_factor * 1.0
+            / hamming_window((index) as f32, fft_size as f32);
         sample
     }
 
     fn process_outputs(&mut self, context: Context) {
-        if self.buffered_samples.len() >= FFT_SIZE {
+        let fft_size = self.forward_fft.len();
+        if self.buffered_samples.len() >= fft_size {
             self.buffered_samples.pop_front();
         }
         self.buffered_samples
@@ -346,7 +381,7 @@ impl NodeBehaviour for BandPassFilter {
 #[derive(Debug, Clone)]
 struct Node {
     id: i32,
-    behaviour: Rc<RefCell<dyn NodeBehaviour>>,
+    pub behaviour: Rc<RefCell<dyn NodeBehaviour>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -356,6 +391,37 @@ enum NodeParamInput {
 }
 
 #[derive(Clone)]
+struct FftFactory {
+    forward_fft: Arc<dyn RealToComplex<f32>>,
+    inverse_fft: Arc<dyn ComplexToReal<f32>>,
+    fft_input_vec: Rc<RefCell<Vec<f32>>>,
+    fft_output_vec: Rc<RefCell<Vec<Complex<f32>>>>,
+}
+
+impl FftFactory {
+    fn new(fft_size: usize) -> FftFactory {
+        let mut real_planner = RealFftPlanner::<f32>::new();
+        let forward_fft = real_planner.plan_fft_forward(fft_size);
+        let inverse_fft = real_planner.plan_fft_inverse(fft_size);
+        let fft_input_vec = Rc::new(RefCell::new(forward_fft.make_input_vec()));
+        let fft_output_vec = Rc::new(RefCell::new(forward_fft.make_output_vec()));
+
+        FftFactory {
+            forward_fft,
+            inverse_fft,
+            fft_input_vec,
+            fft_output_vec,
+        }
+    }
+}
+
+impl std::fmt::Debug for FftFactory {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "FftFactory")
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct AudioGraph {
     next_id: i32,
     nodes: Vec<Node>,
@@ -364,291 +430,24 @@ pub struct AudioGraph {
     sample_rate: i32,
     current_sample: i32,
     out_node: Option<i32>,
-    forward_fft: Arc<dyn RealToComplex<f32>>,
-    inverse_fft: Arc<dyn ComplexToReal<f32>>,
-    fft_input_vec: Rc<RefCell<Vec<f32>>>,
-    fft_output_vec: Rc<RefCell<Vec<Complex<f32>>>>,
-}
-
-impl std::fmt::Debug for AudioGraph {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "AudioGraph")
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct NodeBuilder {
-    graph_builder: AudioGraphBuilder,
-    id: i32,
-}
-
-impl NodeBuilder {
-    pub fn set_input_node(&mut self, node: NodeBuilder) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_node(self.id, node.id);
-        self.clone()
-    }
-
-    pub fn set_input_constant(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_constant_f64(self.id, value);
-        self.clone()
-    }
-
-    pub fn set_freq_constant(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_named_constant_f64(self.id, NamedInputEnum::Freq, value);
-        self.clone()
-    }
-
-    pub fn set_freq_node(&mut self, node: NodeBuilder) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_named_node(
-            self.id,
-            NamedInputEnum::Freq,
-            node.id,
-        );
-        self.clone()
-    }
-
-    pub fn set_volume_constant(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_named_constant_f64(self.id, NamedInputEnum::Volume, value);
-        self.clone()
-    }
-
-    pub fn set_volume_node(&mut self, node: NodeBuilder) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_named_node(
-            self.id,
-            NamedInputEnum::Volume,
-            node.id,
-        );
-        self.clone()
-    }
-
-    pub fn set_delay_constant(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_named_constant_f64(self.id, NamedInputEnum::Delay, value);
-        self.clone()
-    }
-
-    pub fn set_delay_node(&mut self, node: NodeBuilder) -> NodeBuilder {
-        self.graph_builder.internal.borrow_mut().link_named_node(
-            self.id,
-            NamedInputEnum::Delay,
-            node.id,
-        );
-        self.clone()
-    }
-
-    pub fn set_attack_constant(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_named_constant_f64(self.id, NamedInputEnum::Attack, value);
-        self.clone()
-    }
-
-    pub fn set_decay_constant(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_named_constant_f64(self.id, NamedInputEnum::Decay, value);
-        self.clone()
-    }
-
-    pub fn set_sustain_constant(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_named_constant_f64(self.id, NamedInputEnum::Sustain, value);
-        self.clone()
-    }
-
-    pub fn set_release_constant(&mut self, value: f64) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_named_constant_f64(self.id, NamedInputEnum::Release, value);
-        self.clone()
-    }
-
-    pub fn get_graph(&mut self) -> AudioGraphBuilder {
-        self.graph_builder.clone()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AudioGraphBuilder {
-    internal: Rc<RefCell<AudioGraph>>,
-}
-
-impl AudioGraphBuilder {
-    pub fn new() -> AudioGraphBuilder {
-        AudioGraphBuilder {
-            internal: Rc::new(RefCell::new(AudioGraph::new())),
-        }
-    }
-
-    pub fn sin(&mut self) -> NodeBuilder {
-        let id = self
-            .internal
-            .borrow_mut()
-            .add_node(Rc::new(RefCell::new(SineOscillator {})));
-        NodeBuilder {
-            graph_builder: self.clone(),
-            id,
-        }
-    }
-
-    pub fn square(&mut self) -> NodeBuilder {
-        let id = self
-            .internal
-            .borrow_mut()
-            .add_node(Rc::new(RefCell::new(SquareOscillator {})));
-        NodeBuilder {
-            graph_builder: self.clone(),
-            id,
-        }
-    }
-
-    pub fn sawtooth(&mut self) -> NodeBuilder {
-        let id = self
-            .internal
-            .borrow_mut()
-            .add_node(Rc::new(RefCell::new(SawtoothOscillator {})));
-        NodeBuilder {
-            graph_builder: self.clone(),
-            id,
-        }
-    }
-
-    pub fn triangle(&mut self) -> NodeBuilder {
-        let id = self
-            .internal
-            .borrow_mut()
-            .add_node(Rc::new(RefCell::new(TriangleOscillator {})));
-        NodeBuilder {
-            graph_builder: self.clone(),
-            id,
-        }
-    }
-
-    pub fn random(&mut self) -> NodeBuilder {
-        let id = self
-            .internal
-            .borrow_mut()
-            .add_node(Rc::new(RefCell::new(RandomOscillator {})));
-        NodeBuilder {
-            graph_builder: self.clone(),
-            id,
-        }
-    }
-
-    pub fn gain(&mut self) -> NodeBuilder {
-        let id = self
-            .internal
-            .borrow_mut()
-            .add_node(Rc::new(RefCell::new(Gain {})));
-        NodeBuilder {
-            graph_builder: self.clone(),
-            id,
-        }
-    }
-
-    pub fn delay(&mut self) -> NodeBuilder {
-        let id = self
-            .internal
-            .borrow_mut()
-            .add_node(Rc::new(RefCell::new(Delay::new())));
-        NodeBuilder {
-            graph_builder: self.clone(),
-            id,
-        }
-    }
-
-    pub fn adsr(&mut self) -> NodeBuilder {
-        let id = self
-            .internal
-            .borrow_mut()
-            .add_node(Rc::new(RefCell::new(ADSR {})));
-        NodeBuilder {
-            graph_builder: self.clone(),
-            id,
-        }
-    }
-
-    pub fn mix(&mut self) -> NodeBuilder {
-        let id = self
-            .internal
-            .borrow_mut()
-            .add_node(Rc::new(RefCell::new(Add {})));
-        NodeBuilder {
-            graph_builder: self.clone(),
-            id,
-        }
-    }
-
-    pub fn bandpass(&mut self) -> NodeBuilder {
-        let forward_fft = self.internal.borrow().forward_fft.clone();
-        let inverse_fft = self.internal.borrow().inverse_fft.clone();
-        let input_vec = self.internal.borrow().fft_input_vec.clone();
-        let output_vec = self.internal.borrow().fft_output_vec.clone();
-
-        let id = self
-            .internal
-            .borrow_mut()
-            .add_node(Rc::new(RefCell::new(BandPassFilter::new(
-                forward_fft,
-                inverse_fft,
-                input_vec,
-                output_vec,
-            ))));
-        NodeBuilder {
-            graph_builder: self.clone(),
-            id,
-        }
-    }
-
-    pub fn set_out(&mut self, node: NodeBuilder) {
-        self.internal.borrow_mut().set_out(node.id);
-    }
-
-    pub fn extract_graph(&mut self) -> AudioGraph {
-        // TODO: move out of the Rc<RefCell>?
-        self.internal.borrow().clone()
-    }
+    fft_size: usize,
+    fft_factory: Option<FftFactory>,
+    bandpass_nodes: Vec<i32>,
 }
 
 impl AudioGraph {
     pub fn new() -> AudioGraph {
-        let mut real_planner = RealFftPlanner::<f32>::new();
-        let forward_fft = real_planner.plan_fft_forward(FFT_SIZE);
-        let inverse_fft = real_planner.plan_fft_inverse(FFT_SIZE);
-        let fft_input_vec = Rc::new(RefCell::new(forward_fft.make_input_vec()));
-        let fft_output_vec = Rc::new(RefCell::new(forward_fft.make_output_vec()));
-
         AudioGraph {
             next_id: 0,
             nodes: Vec::new(),
             node_input_nodes: Vec::new(),
             node_input_slots: Vec::new(),
             sample_rate: 0,
-            current_sample: -1,
+            current_sample: 0,
             out_node: None,
-            forward_fft,
-            inverse_fft,
-            fft_input_vec,
-            fft_output_vec,
+            fft_size: DEFAULT_FFT_SIZE,
+            fft_factory: None,
+            bandpass_nodes: Vec::new(),
         }
     }
 
@@ -662,6 +461,10 @@ impl AudioGraph {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    fn replace_with_bandpass(&mut self, id: i32) {
+        self.bandpass_nodes.push(id);
     }
 
     pub fn set_out(&mut self, sink: i32) {
@@ -691,7 +494,34 @@ impl AudioGraph {
         self.sample_rate = num;
     }
 
+    pub fn set_fft_resolution(&mut self, size: usize) {
+        self.fft_size = size;
+    }
+
+    fn lazy_init(&mut self) {
+        if let None = self.fft_factory {
+            self.fft_factory = Some(FftFactory::new(self.fft_size));
+
+            // replace dummy nodes with fft implementation with target resolution
+            for i in &self.bandpass_nodes {
+                let forward_fft = self.fft_factory.as_mut().unwrap().forward_fft.clone();
+                let inverse_fft = self.fft_factory.as_mut().unwrap().inverse_fft.clone();
+                let input_vec = self.fft_factory.as_mut().unwrap().fft_input_vec.clone();
+                let output_vec = self.fft_factory.as_mut().unwrap().fft_output_vec.clone();
+
+                self.nodes[*i as usize].behaviour = Rc::new(RefCell::new(BandPassFilter::new(
+                    forward_fft,
+                    inverse_fft,
+                    input_vec,
+                    output_vec,
+                )));
+            }
+        }
+    }
+
     pub fn gen_next_sample(&mut self) -> f32 {
+        self.lazy_init();
+
         if self.out_node.is_none() {
             return 0.0;
         }
@@ -710,8 +540,8 @@ impl AudioGraph {
         let mut outputs = Vec::<f32>::new();
         outputs.resize(self.nodes.len(), 0.0);
 
-        self.current_sample += 1;
         let time = self.current_sample as f32 / self.sample_rate as f32;
+        self.current_sample += 1;
         // first pass
         for node in &self.nodes {
             // figure out the dependency graph
@@ -844,6 +674,266 @@ impl AudioGraph {
         }
 
         outputs[self.out_node.unwrap() as usize]
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeBuilder {
+    graph_builder: AudioGraphBuilder,
+    id: i32,
+}
+
+impl NodeBuilder {
+    pub fn set_input_node(&mut self, node: NodeBuilder) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_node(self.id, node.id);
+        self.clone()
+    }
+
+    pub fn set_input_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_constant_f64(self.id, value);
+        self.clone()
+    }
+
+    pub fn set_freq_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Freq, value);
+        self.clone()
+    }
+
+    pub fn set_freq_node(&mut self, node: NodeBuilder) -> NodeBuilder {
+        self.graph_builder.internal.borrow_mut().link_named_node(
+            self.id,
+            NamedInputEnum::Freq,
+            node.id,
+        );
+        self.clone()
+    }
+
+    pub fn set_volume_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Volume, value);
+        self.clone()
+    }
+
+    pub fn set_volume_node(&mut self, node: NodeBuilder) -> NodeBuilder {
+        self.graph_builder.internal.borrow_mut().link_named_node(
+            self.id,
+            NamedInputEnum::Volume,
+            node.id,
+        );
+        self.clone()
+    }
+
+    pub fn set_delay_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Delay, value);
+        self.clone()
+    }
+
+    pub fn set_delay_node(&mut self, node: NodeBuilder) -> NodeBuilder {
+        self.graph_builder.internal.borrow_mut().link_named_node(
+            self.id,
+            NamedInputEnum::Delay,
+            node.id,
+        );
+        self.clone()
+    }
+
+    pub fn set_attack_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Attack, value);
+        self.clone()
+    }
+
+    pub fn set_decay_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Decay, value);
+        self.clone()
+    }
+
+    pub fn set_sustain_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Sustain, value);
+        self.clone()
+    }
+
+    pub fn set_release_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::Release, value);
+        self.clone()
+    }
+
+    pub fn set_cutoff_low_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::CutoffLow, value);
+        self.clone()
+    }
+
+    pub fn set_cutoff_high_constant(&mut self, value: f64) -> NodeBuilder {
+        self.graph_builder
+            .internal
+            .borrow_mut()
+            .link_named_constant_f64(self.id, NamedInputEnum::CutoffHigh, value);
+        self.clone()
+    }
+
+    pub fn get_graph(&mut self) -> AudioGraphBuilder {
+        self.graph_builder.clone()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioGraphBuilder {
+    internal: Rc<RefCell<AudioGraph>>,
+}
+
+impl AudioGraphBuilder {
+    pub fn new() -> AudioGraphBuilder {
+        AudioGraphBuilder {
+            internal: Rc::new(RefCell::new(AudioGraph::new())),
+        }
+    }
+
+    pub fn sin(&mut self) -> NodeBuilder {
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(SineOscillator {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
+    pub fn square(&mut self) -> NodeBuilder {
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(SquareOscillator {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
+    pub fn sawtooth(&mut self) -> NodeBuilder {
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(SawtoothOscillator {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
+    pub fn triangle(&mut self) -> NodeBuilder {
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(TriangleOscillator {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
+    pub fn random(&mut self) -> NodeBuilder {
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(RandomOscillator {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
+    pub fn gain(&mut self) -> NodeBuilder {
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(Gain {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
+    pub fn delay(&mut self) -> NodeBuilder {
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(Delay::new())));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
+    pub fn adsr(&mut self) -> NodeBuilder {
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(ADSR {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
+    pub fn mix(&mut self) -> NodeBuilder {
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(Add {})));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
+    pub fn bandpass(&mut self) -> NodeBuilder {
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(Dummy {})));
+        self.internal.borrow_mut().replace_with_bandpass(id);
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
+    pub fn set_out(&mut self, node: NodeBuilder) {
+        self.internal.borrow_mut().set_out(node.id);
+    }
+
+    pub fn extract_graph(&mut self) -> AudioGraph {
+        // TODO: move out of the Rc<RefCell>?
+        self.internal.borrow().clone()
     }
 }
 
@@ -1101,9 +1191,14 @@ mod tests {
         graph_builder.set_out(b);
         let mut graph = graph_builder.extract_graph();
         graph.set_sample_rate(10000);
+        graph.set_fft_resolution(500);
 
-        // run 2 cycles
-        for _ in 0..200 {
+        // bandpass causes delay of res/2 * 1/sample_rate
+        // we are 250 samples behind!
+
+        // TODO: looks like we need full 500(+2) cycles to "warm up" the fft
+        // TODO: where are the 2 extra samples coming from?
+        for _ in 0..552 {
             graph.gen_next_sample();
         }
 
@@ -1125,5 +1220,101 @@ mod tests {
             graph.gen_next_sample();
         }
         assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn can_cut_out_frequencies_with_bandpass_filter() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let o = graph_builder.sin().set_freq_constant(100.0);
+        let o1 = graph_builder.sin().set_freq_constant(1.0);
+        let o2 = graph_builder.sin().set_freq_constant(200.0);
+        let mut b = graph_builder.bandpass().set_cutoff_low_constant(50.0).set_cutoff_high_constant(150.0);
+        b.set_input_node(
+            graph_builder
+                .mix()
+                .set_input_node(o)
+                .set_input_node(o1)
+                .set_input_node(o2),
+        );
+        graph_builder.set_out(b);
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(10000);
+        graph.set_fft_resolution(500);
+
+        // bandpass causes delay of res/2 * 1/sample_rate
+        // we are 250 samples behind!
+
+        // TODO: looks like we need full 500(+2) cycles to "warm up" the fft
+        // TODO: where are the 2 extra samples coming from?
+        for _ in 0..552 {
+            graph.gen_next_sample();
+        }
+
+        // test 2 more cycles
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-3);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 1.0).abs() < 1.0e-3);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-3);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - -1.0).abs() < 1.0e-3);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn can_cut_out_frequencies_with_bandpass_filter_at_higher_resolution() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let o = graph_builder.sin().set_freq_constant(100.0);
+        let o1 = graph_builder.sin().set_freq_constant(1.0);
+        let o2 = graph_builder.sin().set_freq_constant(200.0);
+        let mut b = graph_builder.bandpass().set_cutoff_low_constant(50.0).set_cutoff_high_constant(150.0);
+        b.set_input_node(
+            graph_builder
+                .mix()
+                .set_input_node(o)
+                .set_input_node(o1)
+                .set_input_node(o2),
+        );
+        graph_builder.set_out(b);
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(10000);
+        graph.set_fft_resolution(1000);
+
+        // bandpass causes delay of res/2 * 1/sample_rate
+        // we are 250 samples behind!
+
+        // TODO: looks like we need full 500(+2) cycles to "warm up" the fft
+        // TODO: where are the 2 extra samples coming from?
+        for _ in 0..1002 {
+            graph.gen_next_sample();
+        }
+
+        // test 2 more cycles
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-3);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 1.0).abs() < 1.0e-3);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-3);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - -1.0).abs() < 1.0e-3);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-3);
     }
 }
