@@ -1,12 +1,17 @@
 use rand::{thread_rng, Rng};
+use realfft::num_complex::Complex;
+use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
+
+const FFT_SIZE: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum NamedInputEnum {
@@ -21,6 +26,7 @@ pub enum NamedInputEnum {
 pub struct Context<'a> {
     time: f32,
     sample_rate: i32,
+    id: i32,
     inputs: &'a Vec<NodeParamInput>,
     named_inputs: &'a HashMap<NamedInputEnum, NodeParamInput>,
     outputs: &'a Vec<f32>,
@@ -240,6 +246,94 @@ impl NodeBehaviour for Delay {
     }
 }
 
+struct BandPassFilter {
+    pub buffered_samples: VecDeque<f32>,
+    forward_fft: Arc<dyn RealToComplex<f32>>,
+    inverse_fft: Arc<dyn ComplexToReal<f32>>,
+    input_vec: Rc<RefCell<Vec<f32>>>,
+    output_vec: Rc<RefCell<Vec<Complex<f32>>>>,
+}
+
+impl BandPassFilter {
+    fn new(
+        forward_fft: Arc<dyn RealToComplex<f32>>,
+        inverse_fft: Arc<dyn ComplexToReal<f32>>,
+        input_vec: Rc<RefCell<Vec<f32>>>,
+        output_vec: Rc<RefCell<Vec<Complex<f32>>>>,
+    ) -> BandPassFilter {
+        BandPassFilter {
+            buffered_samples: VecDeque::new(),
+            forward_fft,
+            inverse_fft,
+            input_vec,
+            output_vec,
+        }
+    }
+}
+
+impl NodeBehaviour for BandPassFilter {
+    fn gen_next_sample(&self, context: Context) -> f32 {
+        let input_sample = context.read_input(0).unwrap_or(0.0);
+        {
+            let mut input_vec = self.input_vec.borrow_mut();
+            // TODO: PERF: fill only the indices we won't write to
+            input_vec.fill(0.0);
+            input_vec[FFT_SIZE - 1] = input_sample;
+            for i in 0..FFT_SIZE {
+                // TODO: PERF: can we just use the ringbuffer?
+
+                // 0 is front of the queue (the newest sample)
+                if let Some(sample) = self.buffered_samples.get(i) {
+                    let write_index = FFT_SIZE as i32 - 1 - 1 - i as i32;
+                    if write_index >= 0 {
+                        input_vec[FFT_SIZE - 1 - 1 - i] = *sample;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
+        self.forward_fft
+            .process(
+                &mut self.input_vec.borrow_mut(),
+                &mut self.output_vec.borrow_mut(),
+            )
+            .unwrap();
+
+        let normalise_factor = 1.0 / (FFT_SIZE as f32).sqrt();
+        {
+            let mut output = self.output_vec.borrow_mut();
+            let n = output.len();
+            for i in 0..n {
+                output[i] *= normalise_factor;
+            }
+        }
+
+        // TODO: PERF: one sample here needed, do we need entire FFT?
+        self.inverse_fft
+            .process(
+                &mut self.output_vec.borrow_mut(),
+                &mut self.input_vec.borrow_mut(),
+            )
+            .unwrap();
+
+        // normalise
+        let sample = self.input_vec.borrow()[FFT_SIZE - 1] * normalise_factor;
+        sample
+    }
+
+    fn process_outputs(&mut self, context: Context) {
+        if self.buffered_samples.len() >= FFT_SIZE {
+            self.buffered_samples.pop_front();
+        }
+        self.buffered_samples
+            .push_back(context.read_input(0).unwrap_or(0.0));
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Node {
     id: i32,
@@ -252,7 +346,7 @@ enum NodeParamInput {
     Node(i32),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AudioGraph {
     next_id: i32,
     nodes: Vec<Node>,
@@ -261,6 +355,16 @@ pub struct AudioGraph {
     sample_rate: i32,
     current_sample: i32,
     out_node: Option<i32>,
+    forward_fft: Arc<dyn RealToComplex<f32>>,
+    inverse_fft: Arc<dyn ComplexToReal<f32>>,
+    fft_input_vec: Rc<RefCell<Vec<f32>>>,
+    fft_output_vec: Rc<RefCell<Vec<Complex<f32>>>>,
+}
+
+impl std::fmt::Debug for AudioGraph {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "AudioGraph")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -295,10 +399,11 @@ impl NodeBuilder {
     }
 
     pub fn set_freq_node(&mut self, node: NodeBuilder) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_named_node(self.id, NamedInputEnum::Freq, node.id);
+        self.graph_builder.internal.borrow_mut().link_named_node(
+            self.id,
+            NamedInputEnum::Freq,
+            node.id,
+        );
         self.clone()
     }
 
@@ -311,10 +416,11 @@ impl NodeBuilder {
     }
 
     pub fn set_volume_node(&mut self, node: NodeBuilder) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_named_node(self.id, NamedInputEnum::Volume, node.id);
+        self.graph_builder.internal.borrow_mut().link_named_node(
+            self.id,
+            NamedInputEnum::Volume,
+            node.id,
+        );
         self.clone()
     }
 
@@ -327,10 +433,11 @@ impl NodeBuilder {
     }
 
     pub fn set_delay_node(&mut self, node: NodeBuilder) -> NodeBuilder {
-        self.graph_builder
-            .internal
-            .borrow_mut()
-            .link_named_node(self.id, NamedInputEnum::Delay, node.id);
+        self.graph_builder.internal.borrow_mut().link_named_node(
+            self.id,
+            NamedInputEnum::Delay,
+            node.id,
+        );
         self.clone()
     }
 
@@ -482,6 +589,27 @@ impl AudioGraphBuilder {
         }
     }
 
+    pub fn bandpass(&mut self) -> NodeBuilder {
+        let forward_fft = self.internal.borrow().forward_fft.clone();
+        let inverse_fft = self.internal.borrow().inverse_fft.clone();
+        let input_vec = self.internal.borrow().fft_input_vec.clone();
+        let output_vec = self.internal.borrow().fft_output_vec.clone();
+
+        let id = self
+            .internal
+            .borrow_mut()
+            .add_node(Rc::new(RefCell::new(BandPassFilter::new(
+                forward_fft,
+                inverse_fft,
+                input_vec,
+                output_vec,
+            ))));
+        NodeBuilder {
+            graph_builder: self.clone(),
+            id,
+        }
+    }
+
     pub fn set_out(&mut self, node: NodeBuilder) {
         self.internal.borrow_mut().set_out(node.id);
     }
@@ -494,6 +622,12 @@ impl AudioGraphBuilder {
 
 impl AudioGraph {
     pub fn new() -> AudioGraph {
+        let mut real_planner = RealFftPlanner::<f32>::new();
+        let forward_fft = real_planner.plan_fft_forward(FFT_SIZE);
+        let inverse_fft = real_planner.plan_fft_inverse(FFT_SIZE);
+        let fft_input_vec = Rc::new(RefCell::new(forward_fft.make_input_vec()));
+        let fft_output_vec = Rc::new(RefCell::new(forward_fft.make_output_vec()));
+
         AudioGraph {
             next_id: 0,
             nodes: Vec::new(),
@@ -502,6 +636,10 @@ impl AudioGraph {
             sample_rate: 0,
             current_sample: -1,
             out_node: None,
+            forward_fft,
+            inverse_fft,
+            fft_input_vec,
+            fft_output_vec,
         }
     }
 
@@ -574,6 +712,7 @@ impl AudioGraph {
                     let context = Context {
                         time: time,
                         sample_rate: self.sample_rate,
+                        id: *input_node_index,
                         outputs: &outputs,
                         inputs: &self.node_input_nodes[*input_node_index as usize],
                         named_inputs: &self.node_input_slots[*input_node_index as usize],
@@ -601,6 +740,7 @@ impl AudioGraph {
                     let context = Context {
                         time: time,
                         sample_rate: self.sample_rate,
+                        id: *input_node_index,
                         outputs: &outputs,
                         inputs: &self.node_input_nodes[*input_node_index as usize],
                         named_inputs: &self.node_input_slots[*input_node_index as usize],
@@ -647,6 +787,7 @@ impl AudioGraph {
             let context = Context {
                 time: time,
                 sample_rate: self.sample_rate,
+                id: *v,
                 outputs: &outputs,
                 inputs: &self.node_input_nodes[*v as usize],
                 named_inputs: &self.node_input_slots[*v as usize],
@@ -663,6 +804,7 @@ impl AudioGraph {
             let context = Context {
                 time: time,
                 sample_rate: self.sample_rate,
+                id: *v,
                 outputs: &outputs,
                 inputs: &self.node_input_nodes[*v as usize],
                 named_inputs: &self.node_input_slots[*v as usize],
@@ -681,6 +823,7 @@ impl AudioGraph {
             let context = Context {
                 time: time,
                 sample_rate: self.sample_rate,
+                id: v,
                 outputs: &outputs,
                 inputs: &self.node_input_nodes[v as usize],
                 named_inputs: &self.node_input_slots[v as usize],
@@ -697,6 +840,8 @@ impl AudioGraph {
 
 #[cfg(test)]
 mod tests {
+    use realfft::num_complex::ComplexFloat;
+
     use super::*;
 
     #[test]
@@ -938,5 +1083,40 @@ mod tests {
         assert_eq!(graph.gen_next_sample(), 1.0);
         assert_eq!(graph.gen_next_sample(), 1.0);
         assert_eq!(graph.gen_next_sample(), 1.0);
+    }
+
+    #[test]
+    fn can_apply_neutral_bandpass_filter() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let o = graph_builder.sin().set_freq_constant(100.0);
+        let mut b = graph_builder.bandpass();
+        b.set_input_node(o);
+        graph_builder.set_out(b);
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(10000);
+
+        // run 2 cycles
+        for _ in 0..200 {
+            graph.gen_next_sample();
+        }
+
+        // test 2 more cycles
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-5);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 1.0).abs() < 1.0e-5);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-5);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - -1.0).abs() < 1.0e-5);
+        for _ in 0..24 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-5);
     }
 }
