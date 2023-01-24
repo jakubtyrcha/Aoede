@@ -320,6 +320,7 @@ impl NodeBehaviour for BandPassFilter {
         let cutoff_high_fq = context
             .read_named_input(NamedInputEnum::CutoffHigh)
             .unwrap_or(20000.0);
+
         let normalise_factor = 1.0 / (fft_size as f32).sqrt();
         {
             let mut output = self.output_vec.borrow_mut();
@@ -328,6 +329,7 @@ impl NodeBehaviour for BandPassFilter {
                 (cutoff_low_fq / (context.sample_rate as f32 / fft_size as f32)).floor() as usize;
             let cutoff_high_bucket =
                 (cutoff_high_fq / (context.sample_rate as f32 / fft_size as f32)).floor() as usize;
+            
             for i in 0..n {
                 let mask = if cutoff_low_bucket < cutoff_high_bucket {
                     if cutoff_low_bucket <= i && i <= cutoff_high_bucket {
@@ -1213,96 +1215,97 @@ mod tests {
         assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-5);
     }
 
-    // #[test]
-    // fn can_cut_out_frequencies_with_bandpass_filter() {
-    //     let mut graph_builder = AudioGraphBuilder::new();
-    //     let o = graph_builder.sin().set_freq_constant(100.0);
-    //     let o1 = graph_builder.sin().set_freq_constant(10.0);
-    //     let o2 = graph_builder.sin().set_freq_constant(2000.0);
-    //     let mut b = graph_builder.bandpass().set_cutoff_low_constant(25.0).set_cutoff_high_constant(1000.0);
-    //     b.set_input_node(
-    //         graph_builder
-    //             .mix()
-    //             .set_input_node(o)
-    //             .set_input_node(o1)
-    //             .set_input_node(o2),
-    //     );
-    //     graph_builder.set_out(b);
-    //     let mut graph = graph_builder.extract_graph();
-    //     graph.set_sample_rate(10000);
-    //     graph.set_fft_resolution(500);
+    #[test]
+    fn can_cut_out_frequencies_with_bandpass_filter() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let o = graph_builder.sin().set_freq_constant(50.0);
+        let o1 = graph_builder.sin().set_freq_constant(5.0);
+        let o2 = graph_builder.sin().set_freq_constant(100.0);
+        let mut b = graph_builder.bandpass().set_cutoff_low_constant(30.0).set_cutoff_high_constant(80.0);
+        b.set_input_node(
+            graph_builder
+                .mix()
+                .set_input_node(o)
+                .set_input_node(o1)
+                .set_input_node(o2),
+        );
+        graph_builder.set_out(b);
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(1000);
+        graph.set_fft_resolution(500);
 
-    //     // bandpass causes delay of res/2 * 1/sample_rate
-    //     // we are 250 samples behind!
-    //     for _ in 0..249 {
-    //         graph.gen_next_sample();
-    //     }
+        // bandpass causes delay of res/2 * 1/sample_rate
+        // we are 250 samples behind!
+        // each cycle is 20 samples
+        // let's run a full cycle after we crossed half of the window
+        for _ in 0..269 {
+            graph.gen_next_sample();
+        }
 
-    //     // test 2 more cycles
-    //     assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-1);
-    //     for _ in 0..24 {
-    //         graph.gen_next_sample();
-    //     }
-    //     assert!((graph.gen_next_sample() - 1.0).abs() < 1.0e-1);
-    //     for _ in 0..24 {
-    //         graph.gen_next_sample();
-    //     }
-    //     assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-1);
-    //     for _ in 0..24 {
-    //         graph.gen_next_sample();
-    //     }
-    //     assert!((graph.gen_next_sample() - -1.0).abs() < 1.0e-1);
-    //     for _ in 0..24 {
-    //         graph.gen_next_sample();
-    //     }
-    //     assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-1);
-    // }
+        // test 2 more cycles
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-1);
+        for _ in 0..4 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 1.0).abs() < 1.0e-1);
+        for _ in 0..4 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-1);
+        for _ in 0..4 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - -1.0).abs() < 1.0e-1);
+        for _ in 0..4 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-1);
+    }
 
-    // #[test]
-    // fn can_cut_out_frequencies_with_bandpass_filter_at_higher_resolution() {
-    //     let mut graph_builder = AudioGraphBuilder::new();
-    //     let o = graph_builder.sin().set_freq_constant(100.0);
-    //     let o1 = graph_builder.sin().set_freq_constant(1.0);
-    //     let o2 = graph_builder.sin().set_freq_constant(200.0);
-    //     let mut b = graph_builder.bandpass().set_cutoff_low_constant(50.0).set_cutoff_high_constant(150.0);
-    //     b.set_input_node(
-    //         graph_builder
-    //             .mix()
-    //             .set_input_node(o)
-    //             .set_input_node(o1)
-    //             .set_input_node(o2),
-    //     );
-    //     graph_builder.set_out(b);
-    //     let mut graph = graph_builder.extract_graph();
-    //     graph.set_sample_rate(10000);
-    //     graph.set_fft_resolution(1000);
+    #[test]
+    fn can_cut_out_frequencies_with_bandpass_filter_at_higher_resolution() {
+        let mut graph_builder = AudioGraphBuilder::new();
+        let o = graph_builder.sin().set_freq_constant(50.0);
+        let o1 = graph_builder.sin().set_freq_constant(5.0);
+        let o2 = graph_builder.sin().set_freq_constant(100.0);
+        let mut b = graph_builder.bandpass().set_cutoff_low_constant(30.0).set_cutoff_high_constant(80.0);
+        b.set_input_node(
+            graph_builder
+                .mix()
+                .set_input_node(o)
+                .set_input_node(o1)
+                .set_input_node(o2),
+        );
+        graph_builder.set_out(b);
+        let mut graph = graph_builder.extract_graph();
+        graph.set_sample_rate(1000);
+        graph.set_fft_resolution(1000);
 
-    //     // bandpass causes delay of res/2 * 1/sample_rate
-    //     // we are 250 samples behind!
+        // bandpass causes delay of res/2 * 1/sample_rate
+        // we are 500 samples behind!
+        // each cycle is 20 samples
+        // let's run a full cycle after we crossed half of the window
+        for _ in 0..519 {
+            graph.gen_next_sample();
+        }
 
-    //     // TODO: looks like we need full 500(+2) cycles to "warm up" the fft
-    //     // TODO: where are the 2 extra samples coming from?
-    //     for _ in 0..1002 {
-    //         graph.gen_next_sample();
-    //     }
-
-    //     // test 2 more cycles
-    //     assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-3);
-    //     for _ in 0..24 {
-    //         graph.gen_next_sample();
-    //     }
-    //     assert!((graph.gen_next_sample() - 1.0).abs() < 1.0e-3);
-    //     for _ in 0..24 {
-    //         graph.gen_next_sample();
-    //     }
-    //     assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-3);
-    //     for _ in 0..24 {
-    //         graph.gen_next_sample();
-    //     }
-    //     assert!((graph.gen_next_sample() - -1.0).abs() < 1.0e-3);
-    //     for _ in 0..24 {
-    //         graph.gen_next_sample();
-    //     }
-    //     assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-3);
-    // }
+        // test 2 more cycles
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-1);
+        for _ in 0..4 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 1.0).abs() < 1.0e-1);
+        for _ in 0..4 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-1);
+        for _ in 0..4 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - -1.0).abs() < 1.0e-1);
+        for _ in 0..4 {
+            graph.gen_next_sample();
+        }
+        assert!((graph.gen_next_sample() - 0.0).abs() < 1.0e-1);
+    }
 }
