@@ -11,6 +11,8 @@ use audio_setup::stream_setup_for;
 use audio_synthesis::AudioGraph;
 use audio_synthesis::AudioGraphBuilder;
 use bytemuck::{Pod, Zeroable};
+use composer::Composer;
+use composer::CompositionPlayer;
 use cpal::traits::StreamTrait;
 
 use ::egui::FontDefinitions;
@@ -36,6 +38,7 @@ const INITIAL_HEIGHT: u32 = 1080;
 mod audio_script;
 mod audio_setup;
 mod audio_synthesis;
+mod composer;
 
 use rhai::Engine;
 #[repr(C)]
@@ -60,6 +63,7 @@ struct MyApp {
     graph: Option<AudioGraph>,
     picked_path: Option<std::path::PathBuf>,
     engine: Engine,
+    player: CompositionPlayer,
     error: Option<Box<rhai::EvalAltResult>>,
     fft: Arc<dyn RealToComplex<f32>>,
     indata: Vec<f32>,
@@ -79,11 +83,7 @@ impl MyApp {
     fn precompute_samples(&mut self, index: usize) {
         let buffer = SAMPLES_PRECOMPUTE_BUFFER_SEC * 48000; // 1 sec ahead
         while self.write_index < index + buffer {
-            let sample = if let Some(graph) = &mut self.graph {
-                graph.gen_next_sample()
-            } else {
-                0.0
-            };
+            let sample = self.player.gen_next_sample();
 
             let samples_num = self.samples.len();
             self.samples[self.write_index % samples_num] = sample;
@@ -94,14 +94,26 @@ impl MyApp {
     }
 }
 
-fn hamming(i: f32, n: f32) -> f32 {
-    0.53836 - 0.46164 * ((2.0 * std::f32::consts::PI * i) / (n - 1.0)).cos()
-}
-
 const FFT_SIZE : usize = 4096;
 
 impl Default for MyApp {
     fn default() -> Self {
+        let mut composer = Composer::new();
+        //E
+        composer.play_sound(20).move_head();
+        //A
+        composer.play_sound(25).move_head();
+        //F
+        composer.play_sound(21).move_head();
+        //B
+        composer.play_sound(27).move_head();
+        //G
+        composer.play_sound(23).move_head();
+
+        let mut player = CompositionPlayer::new(composer.clone_composition());
+
+
+
         let (_host, device, config) = audio_setup::host_device_setup().unwrap();
 
         let engine = build_audio_script_engine();
@@ -137,6 +149,7 @@ impl Default for MyApp {
             write_index: 0,
             graph: None,
             picked_path: None,
+            player: player,
             engine,
             error: None,
             fft: r2c,
@@ -168,128 +181,7 @@ impl MyApp {
 
     pub fn ui(&mut self, ctx: &Context, watcher: &mut dyn Watcher, recompile: &Arc<AtomicBool>) {
         let sample_rate = 48000;
-
-        egui::Window::new("Aoede").show(ctx, |ui| {
-            if ui.button("Open file…").clicked() {
-                if let Some(path) = rfd::FileDialog::new().pick_file() {
-                    if let Some(path) = &self.picked_path {
-                        watcher.unwatch(&path);
-                    }
-
-                    watcher
-                        .watch(path.as_path(), RecursiveMode::Recursive)
-                        .unwrap();
-
-                    self.picked_path = Some(path);
-                    self.recompile_graph();
-                }
-            }
-
-            if ui.button("Reload").clicked() && self.picked_path.is_some() {
-                self.recompile_graph();
-            }
-
-            if recompile.load(std::sync::atomic::Ordering::SeqCst) {
-                self.recompile_graph();
-                recompile.store(false, std::sync::atomic::Ordering::SeqCst);
-            }
-
-            if let Some(error) = &self.error {
-                ui.label(error.to_string());
-            }
-
-            if let Some(picked_path) = &self.picked_path {
-                ui.horizontal(|ui| {
-                    ui.label("Picked file:");
-                    ui.monospace(picked_path.as_path().to_str().unwrap());
-                });
-            }
-
-            let data_clone = self.samples.clone();
-
-            for i in 0..FFT_SIZE {
-                self.indata[i] =
-                    self.samples[(self.write_index + self.samples.len() - FFT_SIZE + i) % self.samples.len()] * hamming(i as f32, FFT_SIZE as f32);
-            }
-
-            self.fft
-                .process(&mut self.indata, &mut self.spectrum)
-                .unwrap();
-
-            for i in 0..self.spectrum.len() {
-                // this makes the magnitude change with resolution size
-                // TODO: correct normalisation...
-                //self.spectrum[i] *= 1.0 / (FFT_SIZE as f32).sqrt();
-                self.spectrum[i] *= 1.0 / (FFT_SIZE as f32);
-            }
-
-            let points = plot::PlotPoints::from_explicit_callback(
-                move |x: f64| {
-                    let index = if x >= 0.0 {
-                        (x * sample_rate as f64) as usize
-                    } else {
-                        0
-                    };
-                    if index < data_clone.len() {
-                        return data_clone[index] as f64;
-                    }
-                    0.0
-                },
-                std::f64::NEG_INFINITY..std::f64::INFINITY,
-                1000,
-            );
-
-            plot::Plot::new("Audio plot")
-                .data_aspect(1.0)
-                .show(ui, |plot_ui| plot_ui.line(plot::Line::new(points)));
-        });
-
-        egui::Window::new("Spectrum").show(ctx, |ui| {
-
-            let spectrum = plot::PlotPoints::from_iter(
-                self.spectrum
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| [(i as f32 * 48000.0 / FFT_SIZE as f32) as f64, (c).abs() as f64]),
-            );
-
-            plot::Plot::new("Spectrum plot")
-                .view_aspect(2.0)
-                .show(ui, |plot_ui| plot_ui.line(plot::Line::new(spectrum)));
-
-            // self.invfft.process(&mut self.spectrum, &mut self.invdata);
-
-            // for i in 0..self.indata.len() {
-            //     self.invdata[i] *= 1.0 / 1024.0_f32.sqrt();
-            // }
-
-            // let mut data_clone = Vec::new();
-            // data_clone.resize(self.samples.len(), 0.0);
-
-            // for i in 0..1024 {
-            //     data_clone[(self.write_index + self.samples.len() - 1024 + i) % self.samples.len()] = self.invdata[i];
-            // }
-
-            // let points = plot::PlotPoints::from_explicit_callback(
-            //     move |x: f64| {
-            //         let index = if x >= 0.0 {
-            //             (x * sample_rate as f64) as usize
-            //         } else {
-            //             0
-            //         };
-            //         if index < data_clone.len() {
-            //             return data_clone[index] as f64;
-            //         }
-            //         0.0
-            //     },
-            //     std::f64::NEG_INFINITY..std::f64::INFINITY,
-            //     1000,
-            // );
-
-            // plot::Plot::new("Audio plot 1")
-            //     .data_aspect(1.0)
-            //     .show(ui, |plot_ui| plot_ui.line(plot::Line::new(points)));
-        });
+        
     }
 }
 
