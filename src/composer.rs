@@ -78,11 +78,11 @@ impl SoundBuilder {
 
 impl Composition {
     fn new() -> Composition {
-        Composition { bpm: 1.0, head_beats: 0.0, sounds: Vec::new() }
+        Composition { bpm: 160.0, head_beats: 0.0, sounds: Vec::new() }
     }
 
-    pub fn get_beat_time(&self) -> f32 {
-        1.0 / self.bpm
+    pub fn get_beat_time_sec(&self) -> f32 {
+        60.0 / self.bpm
     }
 }
 
@@ -152,8 +152,11 @@ impl CompositionPlayer {
 
         for i in 0..self.composition.sounds.len() {
             let sound = &self.composition.sounds[i];
-            let offset = sound.offset_beats * self.composition.get_beat_time();
-            let duration = sound.duration_beats * self.composition.get_beat_time();
+            let offset = sound.offset_beats * self.composition.get_beat_time_sec();
+            //let duration = sound.duration_beats * self.composition.get_beat_time_sec();
+            // distinguish between the time we spend activating the sound and the decay
+            // we play the piano sounds for 1 sec irregardless of the bpm
+            let duration = 1.0;
             if time >= offset && time < offset + duration {
                 let sound_id = sound.sound_id;
                 if !self.sound_cache.contains_key(&sound_id) {
