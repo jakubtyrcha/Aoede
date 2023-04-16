@@ -78,7 +78,7 @@ impl SoundBuilder {
 
 impl Composition {
     fn new() -> Composition {
-        Composition { bpm: 60.0, head_beats: 0.0, sounds: Vec::new() }
+        Composition { bpm: 1.0, head_beats: 0.0, sounds: Vec::new() }
     }
 
     pub fn get_beat_time(&self) -> f32 {
@@ -90,7 +90,7 @@ fn piano_key_freq(key: i32) -> f32 {
     2.0_f32.powf((key as f32 - 49.0) / 12.0) * 440.0
 }
 
-fn cache_piano_key(key: i32, press_duration: f32) -> Vec<f32> {
+fn cache_piano_key(key: i32, _press_duration: f32) -> Vec<f32> {
     // key -> freq -> script -> soundwave
     let freq = piano_key_freq(key);
     let script = 
@@ -132,6 +132,16 @@ pub struct CompositionPlayer {
 impl CompositionPlayer {
     pub fn new(composition: Composition) -> CompositionPlayer {
         CompositionPlayer { composition, sound_cache: HashMap::new(), sample_index: 0 }
+    }
+
+    pub fn warm_up(&mut self) {
+        for i in 0..self.composition.sounds.len() {
+            let sound = &self.composition.sounds[i];
+            let sound_id = sound.sound_id;
+            if !self.sound_cache.contains_key(&sound_id) {
+                self.sound_cache.insert(sound_id, cache_piano_key(sound_id, 0.0));
+            }
+        }
     }
 
     pub fn gen_next_sample(&mut self) -> f32 {

@@ -111,7 +111,7 @@ impl Default for MyApp {
         composer.play_sound(23).move_head();
 
         let mut player = CompositionPlayer::new(composer.clone_composition());
-
+        player.warm_up();
 
 
         let (_host, device, config) = audio_setup::host_device_setup().unwrap();
